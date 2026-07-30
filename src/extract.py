@@ -86,6 +86,7 @@ class ExtractionResult:
     confidence: dict = field(default_factory=dict)
     raw_response: Optional[str] = None
     error: Optional[str] = None
+    usage: dict = field(default_factory=dict)
 
     def overall_confidence(self) -> float:
         return float(self.confidence.get("overall", 0.0))
@@ -109,8 +110,8 @@ def _build_system_prompt(config: dict) -> str:
     return SYSTEM_PROMPT.format(currencies=currencies, expense_types=expense_types)
 
 
-def _call_vision_api(pages: List[Image.Image], config: dict) -> str:
-    """Llama a la API de Claude y devuelve el texto crudo de la respuesta.
+def _call_vision_api(pages: List[Image.Image], config: dict) -> tuple[str, dict]:
+    """Llama a la API de Claude y devuelve (texto crudo, usage de la respuesta).
 
     Aislado en su propia función para poder mockearlo en tests.
     """
@@ -153,7 +154,14 @@ def _call_vision_api(pages: List[Image.Image], config: dict) -> str:
         system=_build_system_prompt(config),
         messages=[{"role": "user", "content": content}],
     )
-    return "".join(block.text for block in response.content if block.type == "text")
+    text = "".join(block.text for block in response.content if block.type == "text")
+    usage = {
+        "input_tokens": getattr(response.usage, "input_tokens", 0) or 0,
+        "output_tokens": getattr(response.usage, "output_tokens", 0) or 0,
+        "cache_creation_input_tokens": getattr(response.usage, "cache_creation_input_tokens", 0) or 0,
+        "cache_read_input_tokens": getattr(response.usage, "cache_read_input_tokens", 0) or 0,
+    }
+    return text, usage
 
 
 def parse_extraction_response(raw_text: str) -> ExtractionResult:
@@ -198,11 +206,13 @@ def parse_extraction_response(raw_text: str) -> ExtractionResult:
 def extract_receipt(pages: List[Image.Image], config: dict) -> ExtractionResult:
     """Extrae los campos de una boleta (una o más páginas/imágenes de un mismo documento)."""
     try:
-        raw_text = _call_vision_api(pages, config)
+        raw_text, usage = _call_vision_api(pages, config)
     except Exception as exc:  # noqa: BLE001 - se reporta como boleta no procesable
         return ExtractionResult(
             legible=False,
             error=str(exc),
             confidence={"overall": 0.0},
         )
-    return parse_extraction_response(raw_text)
+    result = parse_extraction_response(raw_text)
+    result.usage = usage
+    return result

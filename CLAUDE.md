@@ -72,6 +72,22 @@ total (`G33 = SUM(G9:G32)`) acotan los datos a las filas 9-32 (24 líneas). Si s
 escribir más boletas OK que ese cupo, `write_expense_report` lanza `TemplateCapacityError`
 en vez de desbordarse silenciosamente sobre la fila de total.
 
+## Uso de tokens y costo estimado
+
+Cada llamada a `_call_vision_api` en `extract.py` captura `response.usage` (input,
+output, cache_creation_input_tokens, cache_read_input_tokens) y lo adjunta al
+`ExtractionResult.usage` (dict crudo). `main.py::run()` acumula esto en un
+`cost.TokenUsage` a lo largo de toda la corrida (una llamada por boleta hoy; si en
+el futuro se agregan reintentos, ya quedarían contados automáticamente porque se
+acumula por respuesta real de la API, no por boleta) y al final imprime un resumen
+(`cost.format_summary`) con tokens y costo estimado en USD. Los precios viven en
+`config.yaml` → `pricing.usd_per_million` (input/output/cache_write/cache_read),
+**nunca hardcodeados** — cambian con el tiempo, hay que verificarlos contra
+platform.claude.com/docs/en/pricing. El costo es siempre "estimado": depende
+enteramente de que esos precios estén al día. Si una boleta falla antes de recibir
+respuesta de la API (ej. sin `ANTHROPIC_API_KEY`), su `usage` queda vacío y no suma
+nada al costo — no se factura lo que no se llegó a pedir.
+
 ## Regla de negocio no obvia: boleta + voucher de tarjeta
 
 Boletas fotografiadas en Perú suelen incluir **dos documentos en una sola imagen**: la
@@ -138,10 +154,13 @@ defecto (sin heredar residuos como el 255 de filas vacías), Amount in CLP como 
 preservación de la fórmula de la fila de total y de los dropdowns de Currency/Expense
 Type, el error `TemplateCapacityError` al exceder el cupo de filas, y el estampado de la
 fecha de ejecución en D6/F39 (mismo valor en ambas, cada una con su propio number_format
-preservado, sin afectar la columna Date por fila); y el armado de Comments
+preservado, sin afectar la columna Date por fila); el armado de Comments
 (`tests/test_main.py`: con fecha, sin fecha) más el caso de `validate.py` que confirma
-que una boleta sin fecha sigue quedando "OK" (`tests/test_validate.py`). No hacen
-llamadas a la API de Claude —
+que una boleta sin fecha sigue quedando "OK" (`tests/test_validate.py`); y la
+acumulación de tokens/costo estimado (`tests/test_cost.py`: suma entre llamadas, fórmula
+de costo, formato del resumen) más un test de integración en `tests/test_main.py` que
+mockea `extract_receipt` para dos boletas y verifica que el resumen se imprime al final
+de `run()` con el total correcto. No hacen llamadas a la API de Claude —
 `extract.py` aísla la llamada de red en `_call_vision_api` para poder mockearla; la
 extracción real por visión no se ha probado en este entorno por falta de
 `ANTHROPIC_API_KEY`.

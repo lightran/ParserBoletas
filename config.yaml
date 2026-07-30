@@ -67,3 +67,17 @@ excel:
 output:
   audit_report_path: "output/audit_report.csv"
   default_excel_output_path: "output/Expense_Report.xlsx"
+
+# Precios oficiales de Anthropic por millón de tokens, para el modelo configurado
+# en extraction.model. LOS PRECIOS CAMBIAN — antes de confiar en el costo estimado
+# que imprime el pipeline, verifica estos valores contra la página oficial de
+# precios de Anthropic (platform.claude.com/docs/en/pricing). Consultados 2026-07-30.
+pricing:
+  model: "claude-sonnet-5"
+  usd_per_million:
+    input: 3.00     # precio estándar. Hay un precio introductorio de $2.00 vigente
+                     # hasta 2026-08-31 — no usado acá porque es temporal.
+    output: 15.00    # precio estándar. Introductorio: $10.00 hasta 2026-08-31.
+    cache_write: 3.75  # derivado: 1.25x el precio de input (TTL de 5 min, el default
+                        # de la API) — no es una cifra publicada directamente, verificar.
+    cache_read: 0.30   # derivado: 0.1x el precio de input — verificar.

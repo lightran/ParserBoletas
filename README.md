@@ -75,20 +75,32 @@ python src/main.py boletas/ --output output/Expense_Report.xlsx --audit output/a
 
 ### Salida en consola
 
-Al terminar, el comando imprime un resumen:
+Al terminar, el comando imprime un resumen y el uso de tokens/costo estimado de la
+corrida:
 
 ```
 Excel de rendición: output/Expense_Report.xlsx
 Reporte de auditoría: output/audit_report.csv
 Resumen: 9 OK, 3 para revisión, 12 total
+
+── Resumen de ejecución ──
+Boletas procesadas:    12
+Tokens de entrada:     45,230
+Tokens de salida:      3,120
+Tokens totales:        48,350
+Costo estimado (USD):  $0.1834  (estimado — verificar precios en config.yaml)
 ```
+
+El costo es siempre una **estimación** — depende de que los precios en
+`config.yaml` (`pricing.usd_per_million`) estén al día; los precios de la API
+cambian con el tiempo.
 
 ### Calibrar el comportamiento sin tocar código
 
 Todos los parámetros de preprocesamiento de imagen, umbrales de confianza, tolerancia
-de validación de montos, y las listas fijas de monedas/categorías viven en
-`config.yaml`. Editar ese archivo (o pasar `--config otro.yaml`) para calibrar sin
-tocar Python.
+de validación de montos, las listas fijas de monedas/categorías, y los precios por
+millón de tokens usados para estimar el costo (`pricing`) viven en `config.yaml`.
+Editar ese archivo (o pasar `--config otro.yaml`) para calibrar sin tocar Python.
 
 ## Mecánica de funcionamiento
 
@@ -105,7 +117,8 @@ boletas/*.{jpg,png,pdf}
 2. extract.py      — envía la(s) imagen(es) ya preprocesadas al modelo de visión de
         │             Claude con un prompt que fija el esquema JSON esperado y las
         │             reglas de negocio (ver más abajo). Devuelve vendor, fecha, hora
-        │             de emisión, moneda, monto, tipo de gasto, y una confianza por campo.
+        │             de emisión, moneda, monto, tipo de gasto, una confianza por campo,
+        │             y el `usage` de tokens de esa llamada (para el resumen de costo).
         ▼
 3. currency.py     — parsea el monto extraído respetando el formato numérico
         │             localizado (miles vs. decimales) y normaliza el código de
@@ -207,6 +220,7 @@ ParserBoletas/
     currency.py       # parsing de números localizados + normalización de moneda
     validate.py       # consistencia de montos + umbral de confianza
     excel_writer.py   # escritura al formato de la plantilla
+    cost.py           # acumulación de tokens + estimación de costo de la corrida
     main.py           # orquesta el pipeline sobre una carpeta
   tests/              # pytest, con casos armados a partir de boletas reales
   config.yaml         # parámetros calibrables
@@ -227,10 +241,13 @@ se "invente" (queda marcada para revisión), la escritura del Excel contra la pl
 real: FX=1 por defecto, Amount in CLP como fórmula, preservación del dropdown de
 Currency/Expense Type y de la fórmula de la fila de total, y el estampado de la fecha de
 ejecución en Date Submitted (D6) y Date de "Approved by:" (F39) sin alterar el formato
-de esas celdas ni la columna Date por fila; y el armado de Comments (con fecha, sin
-fecha) junto con el caso que confirma que una boleta sin fecha igual queda "OK". No
-hacen llamadas a la API de Claude (la llamada de red está aislada y mockeada), así que
-corren sin necesidad de `ANTHROPIC_API_KEY`.
+de esas celdas ni la columna Date por fila; el armado de Comments (con fecha, sin
+fecha) junto con el caso que confirma que una boleta sin fecha igual queda "OK"; y la
+acumulación de tokens y el cálculo de costo estimado (suma entre llamadas, fórmula de
+costo, formato del resumen), incluyendo un test que corre `main.run()` con la llamada a
+la API mockeada y confirma que el resumen se imprime al final con el total acumulado.
+No hacen llamadas a la API de Claude (la llamada de red está aislada y mockeada), así
+que corren sin necesidad de `ANTHROPIC_API_KEY`.
 
 ## Fuera de alcance en v1
 

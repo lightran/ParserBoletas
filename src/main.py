@@ -18,6 +18,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import cost
 import currency
 import excel_writer
 import preprocess
@@ -97,10 +98,12 @@ def run(input_dir: Path, config: dict, output_path: Path, audit_path: Path) -> N
 
     ok_rows: List[ExpenseRow] = []
     audit_entries = []
+    total_usage = cost.TokenUsage()
 
     for file_path in files:
         print(f"Procesando {file_path.name}...")
         result, validation = process_file(file_path, config)
+        total_usage.add(result.usage)
 
         audit_entries.append(
             {
@@ -143,6 +146,8 @@ def run(input_dir: Path, config: dict, output_path: Path, audit_path: Path) -> N
     print(f"Excel de rendición: {output_path}")
     print(f"Reporte de auditoría: {audit_path}")
     print(f"Resumen: {n_ok} OK, {n_review} para revisión, {len(audit_entries)} total")
+    print()
+    print(cost.format_summary(len(files), total_usage, config.get("pricing", {})))
 
 
 def _write_audit_report(entries: list[dict], audit_path: Path) -> None:
