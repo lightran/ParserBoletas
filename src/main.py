@@ -72,6 +72,39 @@ def build_comments(filename: str, date_str: Optional[str]) -> str:
     return filename
 
 
+REVIEW_COMMENTS_TEXT = "Boleta para revisión, mirar auditoría"
+
+
+def _build_expense_row(
+    file_path: Path, result: ExtractionResult, validation: "validate.ValidationResult"
+) -> Optional[ExpenseRow]:
+    """Arma la fila a escribir en el Excel, o None si no se determinó el monto.
+
+    Se escribe la fila con los valores que sí se pudieron extraer aunque la boleta
+    haya quedado marcada para revisión (la marca se mantiene en el audit report;
+    esto no la elimina). En ese caso Comments avisa que hay que mirar la auditoría,
+    en vez del nombre de archivo + fecha que llevan las filas OK.
+    """
+    if result.amount is None:
+        return None
+
+    coerced_date = _coerce_date(result.date)
+    if validation.ok:
+        formatted_date = _format_date_like_excel(coerced_date) if coerced_date else None
+        comments = build_comments(file_path.name, formatted_date)
+    else:
+        comments = REVIEW_COMMENTS_TEXT
+
+    return ExpenseRow(
+        date=coerced_date,
+        amount=result.amount,
+        currency=result.currency,
+        expense_type=result.expense_type,
+        source_file=file_path.name,
+        comments=comments,
+    )
+
+
 def process_file(file_path: Path, config: dict) -> tuple[ExtractionResult, validate.ValidationResult]:
     pages = preprocess.preprocess_file(file_path, config)
     result = extract_receipt(pages, config)
@@ -96,7 +129,7 @@ def run(input_dir: Path, config: dict, output_path: Path, audit_path: Path) -> N
         print(f"No se encontraron boletas soportadas en {input_dir}")
         return
 
-    ok_rows: List[ExpenseRow] = []
+    rows_to_write: List[ExpenseRow] = []
     audit_entries = []
     total_usage = cost.TokenUsage()
 
@@ -120,24 +153,13 @@ def run(input_dir: Path, config: dict, output_path: Path, audit_path: Path) -> N
             }
         )
 
-        if validation.ok:
-            coerced_date = _coerce_date(result.date)
-            formatted_date = _format_date_like_excel(coerced_date) if coerced_date else None
-            comments = build_comments(file_path.name, formatted_date)
-            ok_rows.append(
-                ExpenseRow(
-                    date=coerced_date,
-                    amount=result.amount,
-                    currency=result.currency,
-                    expense_type=result.expense_type,
-                    source_file=file_path.name,
-                    comments=comments,
-                )
-            )
+        row = _build_expense_row(file_path, result, validation)
+        if row is not None:
+            rows_to_write.append(row)
 
-    ok_rows.sort(key=lambda r: (r.date or date_cls.max, r.source_file))
+    rows_to_write.sort(key=lambda r: (r.date or date_cls.max, r.source_file))
 
-    excel_writer.write_expense_report(ok_rows, config, output_path)
+    excel_writer.write_expense_report(rows_to_write, config, output_path)
     _write_audit_report(audit_entries, audit_path)
 
     n_ok = sum(1 for e in audit_entries if e["status"] == "OK")

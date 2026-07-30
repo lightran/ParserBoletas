@@ -129,9 +129,10 @@ boletas/*.{jpg,png,pdf}
         │             vino), y umbral de confianza. Decide status "OK" o "REVIEW" y
         │             guarda los motivos.
         ▼
-5a. excel_writer.py — si quedó "OK": se agrega como fila nueva al Excel de salida
-        │              (copia de la plantilla, con las filas de ejemplo limpiadas).
-        │              FX se escribe en 1 y Amount in CLP como fórmula "=FX*Amount",
+5a. excel_writer.py — si se determinó el monto total (esté "OK" o marcada para
+        │              revisión): se agrega como fila nueva al Excel de salida (copia
+        │              de la plantilla, con las filas de ejemplo limpiadas). FX se
+        │              escribe en 1 y Amount in CLP como fórmula "=FX*Amount",
         │              preservando el dropdown de Currency/Expense Type y la fórmula
         │              de la fila de total que trae la plantilla. También estampa la
         │              fecha de ejecución en los dos campos de fecha del encabezado
@@ -141,8 +142,13 @@ boletas/*.{jpg,png,pdf}
                         revisión si aplica. Así se audita cada decisión del pipeline.
 ```
 
-Las boletas marcadas para revisión **no se escriben con datos dudosos** en el Excel —
-solo quedan en el reporte de auditoría para que el usuario decida manualmente.
+Una boleta marcada para revisión **sí se escribe** en el Excel con los datos que se
+pudieron extraer, siempre que se haya determinado el monto total — la marca de revisión
+no desaparece, sigue registrada en `audit_report.csv` y en el resumen de consola, y en
+la fila del Excel la columna Comments avisa que hay que mirar la auditoría (ver más
+abajo). Si el monto total **no** se pudo determinar, la boleta no se escribe en el
+Excel en absoluto — solo queda en el reporte de auditoría, esté OK o no (aunque en la
+práctica una boleta sin monto siempre queda para revisión).
 
 ### Por qué el camino principal es visión y no OCR clásico
 
@@ -166,7 +172,7 @@ Hoja `Expense Report`, encabezado en la fila 8, datos desde la fila 9:
 | FX | Sí, siempre `1` | v1 no hace conversión de divisas; el usuario ajusta el FX real a mano |
 | Amount in CLP | Sí, como fórmula | `=FX*Amount` (ej. `=F9*D9`); se recalcula solo al editar FX a mano |
 | Expense Type | Sí | Una de las 22 categorías fijas de la hoja "Cheat Sheet" |
-| Comments | Sí | `<nombre de archivo> en la fecha <fecha>` (ver regla de negocio abajo) |
+| Comments | Sí | `<nombre de archivo> en la fecha <fecha>`; en filas para revisión, "Boleta para revisión, mirar auditoría" (ver regla de negocio abajo) |
 
 Cada corrida genera el Excel a partir de una copia de la plantilla original (nunca un
 archivo desde cero), escribiendo desde la fila 9 hasta la 32 como máximo — ese es el
@@ -202,11 +208,21 @@ es el decimal; si aparece un solo tipo de separador, se interpreta como decimal 
 si aparece una vez y el último grupo tiene 1-2 dígitos (ej. `235.40`), y como miles en
 el resto de los casos (ej. `464.717` → 464717).
 
-**Formato de Comments**: `<nombre de archivo> en la fecha <fecha>`, donde `<nombre de
-archivo>` es el archivo de origen de la boleta y `<fecha>` usa el mismo formato que la
-columna Date (ej. `27-May-26`). Si no se pudo extraer la fecha de la boleta, Comments
-queda solo con el nombre de archivo, sin el sufijo — una boleta sin fecha legible igual
-puede quedar "OK" y generar su fila.
+**Formato de Comments**: en filas "OK", `<nombre de archivo> en la fecha <fecha>`, donde
+`<nombre de archivo>` es el archivo de origen de la boleta y `<fecha>` usa el mismo
+formato que la columna Date (ej. `27-May-26`). Si no se pudo extraer la fecha de la
+boleta, Comments queda solo con el nombre de archivo, sin el sufijo — una boleta sin
+fecha legible igual puede quedar "OK" y generar su fila. En filas marcadas para
+revisión (pero con monto determinado), Comments es siempre el texto fijo "Boleta para
+revisión, mirar auditoría", sin importar nombre de archivo ni fecha.
+
+**Boletas para revisión con monto determinado sí se escriben en el Excel**: antes,
+cualquier boleta marcada para revisión quedaba excluida del Excel por completo. Ahora,
+si se pudo determinar el monto total, la fila se escribe con los datos que sí se
+extrajeron (Amount, Currency, FX=1, Amount in CLP) — la única diferencia con una fila
+OK es el texto de Comments de arriba. La marca de revisión se sigue registrando igual
+que antes en `audit_report.csv` y en el resumen impreso en consola. Si el monto no se
+determinó, la boleta sigue sin escribirse (eso no cambió).
 
 ## Estructura del proyecto
 
@@ -242,12 +258,18 @@ real: FX=1 por defecto, Amount in CLP como fórmula, preservación del dropdown 
 Currency/Expense Type y de la fórmula de la fila de total, y el estampado de la fecha de
 ejecución en Date Submitted (D6) y Date de "Approved by:" (F39) sin alterar el formato
 de esas celdas ni la columna Date por fila; el armado de Comments (con fecha, sin
-fecha) junto con el caso que confirma que una boleta sin fecha igual queda "OK"; y la
+fecha) junto con el caso que confirma que una boleta sin fecha igual queda "OK"; la
 acumulación de tokens y el cálculo de costo estimado (suma entre llamadas, fórmula de
 costo, formato del resumen), incluyendo un test que corre `main.run()` con la llamada a
-la API mockeada y confirma que el resumen se imprime al final con el total acumulado.
-No hacen llamadas a la API de Claude (la llamada de red está aislada y mockeada), así
-que corren sin necesidad de `ANTHROPIC_API_KEY`.
+la API mockeada y confirma que el resumen se imprime al final con el total acumulado; y
+qué filas se escriben en el Excel (`main.py::_build_expense_row`): boleta para revisión
+con monto determinado → se escribe con Comments = "Boleta para revisión, mirar
+auditoría"; boleta OK → mantiene el formato de nombre de archivo + fecha; boleta para
+revisión sin monto → no se escribe (sin cambios); más un test de integración con tres
+boletas que confirma que la marca de revisión sigue apareciendo en el resumen de
+consola y en `audit_report.csv` aunque la fila ya se haya escrito en el Excel. No hacen
+llamadas a la API de Claude (la llamada de red está aislada y mockeada), así que corren
+sin necesidad de `ANTHROPIC_API_KEY`.
 
 ## Fuera de alcance en v1
 

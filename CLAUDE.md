@@ -36,7 +36,7 @@ Amount in CLP | Expense Type | Comments`.
   después, y **Amount in CLP se recalcula solo** porque se escribe como fórmula.
 - **Amount in CLP** se escribe como fórmula de Excel `=F{fila}*D{fila}` (FX×Amount), no
   como número fijo, precisamente para que se recalcule al editar FX a mano.
-- **Comments** se arma como `<nombre de archivo> en la fecha <fecha>`
+- **Comments**: en filas "OK" se arma como `<nombre de archivo> en la fecha <fecha>`
   (`main.py::build_comments`), donde `<nombre de archivo>` es el archivo de origen de la
   boleta y `<fecha>` usa el mismo formato que la columna Date (`27-May-26`, vía
   `_format_date_like_excel`). Si no se pudo extraer la fecha, Comments queda con solo el
@@ -44,7 +44,9 @@ Amount in CLP | Expense Type | Comments`.
   presente para que una boleta quede "OK" (solo valida el formato si vino) — a
   diferencia de un formato de Comments anterior que sí la exigía. `extract.py` todavía
   extrae un campo `time` (hora de emisión) que quedó de ese formato anterior, pero ya no
-  lo usa ni lo valida nada: es inerte.
+  lo usa ni lo valida nada: es inerte. En filas marcadas para revisión pero con monto
+  determinado, Comments es el texto fijo `main.py::REVIEW_COMMENTS_TEXT` = "Boleta para
+  revisión, mirar auditoría" (ver más abajo).
 - **Currency** usa la lista fija de la hoja "Cheat Sheet" del Excel: `CLP, USD, BRL,
   ARG, PEN, COP, EUR`. Nota: la plantilla usa **"ARG"**, no el código ISO-4217 "ARS",
   para pesos argentinos — es una particularidad de esta plantilla, no un error de
@@ -62,10 +64,15 @@ sí**: D6 usa `[$-409]d\-mmm\-yy;@` (se ve `27-May-26`) y F39 usa `mm-dd-yy` (se
 `07-30-26`), aunque el valor de fecha subyacente sea el mismo.
 
 Cada corrida genera un Excel a partir de una copia de la plantilla (`openpyxl.load_workbook`,
-nunca un archivo desde cero) y escribe una fila por boleta que quedó "OK" desde la fila
-`first_data_row` (9) hasta `last_data_row` (32, configurable en `config.yaml`). Las
-boletas marcadas para revisión NO se escriben en el Excel — solo aparecen en el reporte
-de auditoría (`output/audit_report.csv` por defecto), con el motivo.
+nunca un archivo desde cero) desde la fila `first_data_row` (9) hasta `last_data_row`
+(32, configurable en `config.yaml`). **Qué filas se escriben** (`main.py::_build_expense_row`):
+se escribe cualquier boleta —OK o marcada para revisión— en la que se haya podido
+determinar el monto total (`result.amount is not None`); si no se determinó el monto, no
+se escribe ninguna fila, esté OK o no (ese caso no cambió). La marca de revisión en sí
+nunca desaparece: `audit_entries`/`audit_report.csv` siguen registrando el `status`
+("OK"/"REVIEW") y el motivo de cada boleta, y el resumen impreso en consola sigue
+contando "N para revisión" — este comportamiento es independiente de si la fila se
+escribió o no en el Excel.
 
 **Límite real de la plantilla**: los dropdowns de Currency/Expense Type y la fila de
 total (`G33 = SUM(G9:G32)`) acotan los datos a las filas 9-32 (24 líneas). Si se intenta
@@ -160,7 +167,13 @@ que una boleta sin fecha sigue quedando "OK" (`tests/test_validate.py`); y la
 acumulación de tokens/costo estimado (`tests/test_cost.py`: suma entre llamadas, fórmula
 de costo, formato del resumen) más un test de integración en `tests/test_main.py` que
 mockea `extract_receipt` para dos boletas y verifica que el resumen se imprime al final
-de `run()` con el total correcto. No hacen llamadas a la API de Claude —
+de `run()` con el total correcto; y `_build_expense_row` (`tests/test_main.py`): boleta
+para revisión con monto → se escribe con `REVIEW_COMMENTS_TEXT`, boleta OK → mantiene
+Comments de nombre de archivo + fecha, boleta para revisión sin monto → no se escribe
+(sin cambios), más un test de integración que corre `run()` con tres boletas mockeando
+`process_file` y confirma que la fila de revisión-con-monto queda en el Excel, la de
+revisión-sin-monto no, y el resumen impreso y el `audit_report.csv` siguen marcando
+ambas como REVIEW. No hacen llamadas a la API de Claude —
 `extract.py` aísla la llamada de red en `_call_vision_api` para poder mockearla; la
 extracción real por visión no se ha probado en este entorno por falta de
 `ANTHROPIC_API_KEY`.
