@@ -1,0 +1,69 @@
+# Configuración calibrable del pipeline de rendición de gastos.
+# Ajusta estos valores sin tocar código.
+
+preprocess:
+  # Cada etapa se puede activar/desactivar independientemente.
+  deskew:
+    enabled: true
+  denoise:
+    enabled: true
+    strength: 10          # h de cv2.fastNlMeansDenoising (mayor = más suave, más lento)
+  contrast:
+    enabled: true
+    clahe_clip_limit: 2.0
+    clahe_tile_grid_size: 8
+  upscale:
+    enabled: true
+    min_dimension_px: 1200   # si el lado menor de la imagen es menor a esto, se hace upscale
+    target_dimension_px: 1800
+  binarize:
+    enabled: false          # off por defecto: el modelo de visión rinde mejor con imagen a color/gris realzada
+  pdf_render_dpi: 300
+
+extraction:
+  model: "claude-sonnet-5"
+  max_image_dimension_px: 1568   # límite recomendado para Claude vision antes de reescalar hacia abajo
+  currencies: ["CLP", "USD", "BRL", "ARG", "PEN", "COP", "EUR"]
+  expense_types:
+    - "Mileage - Local"
+    - "Courier"
+    - "Employee Business Meals (No Customers Present)"
+    - "Entertainment - Employee"
+    - "Gifts/Awards - Employee"
+    - "Taxi"
+    - "Entertainment - Customer"
+    - "Meetings/Conferences/Seminars"
+    - "Office - Supplies - Exception"
+    - "Gym Benefit"
+    - "Parking"
+    - "Membership Dues"
+    - "Tolls/Congestion Charge"
+    - "Training/Education"
+    - "Travel - Airfare - Exception"
+    - "Travel - Car Rental"
+    - "Travel - Lodging"
+    - "Travel - Meals"
+    - "Travel - Telephone/Internet"
+    - "Internet Access"
+    - "Miscellaneous"
+    - "Travel - Other"
+
+validation:
+  min_field_confidence: 0.6     # por debajo de esto, el campo se considera dudoso
+  min_overall_confidence: 0.6   # por debajo de esto, la boleta se marca para revisión
+  amount_consistency_tolerance: 1.0   # tolerancia absoluta (en moneda de la boleta) para neto+impuesto(+propina) ≈ total
+
+excel:
+  template_path: "plantilla/Form - Chile Expense Report - Peru Travel Junio 2026.xlsx"
+  sheet_name: "Expense Report"
+  first_data_row: 9
+  last_data_row: 32   # fila 33 trae "=SUM(G9:G32)" (total); no escribir/limpiar más allá de la 32
+  # Fila 8 = encabezados (Item, Date, Amount, Currency, FX, Amount in CLP, Expense Type, Comments)
+  # FX se escribe siempre en 1 (v1 no hace conversión de divisas; se ajusta a mano después).
+  # Amount in CLP se escribe como fórmula "=FX*Amount" para que se recalcule solo al editar FX.
+  employee_name: null    # si se define, sobreescribe D4; si es null, se deja lo que traiga la plantilla
+  cost_centre: null      # idem para D5
+
+output:
+  audit_report_path: "output/audit_report.csv"
+  default_excel_output_path: "output/Expense_Report.xlsx"
