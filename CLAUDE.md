@@ -104,9 +104,11 @@ Amount in CLP | Expense Type | Comments`.
   sigue vigente porque una boleta sin fecha legible igual debe poder quedar "OK".
   `extract.py` todavía extrae un campo `time` (hora de emisión) que quedó de un formato
   de Comments anterior, pero ya no lo usa ni lo valida nada: es inerte. En filas
-  marcadas para revisión pero con monto determinado, Comments es el texto fijo
-  `main.py::REVIEW_COMMENTS_TEXT` = "Boleta para revisión, mirar auditoría" (ver más
-  abajo).
+  marcadas para revisión pero con monto determinado, Comments es el mismo nombre sin
+  extensión más el sufijo `main.py::REVIEW_COMMENTS_SUFFIX` = " (Marcada para Revision)"
+  (`main.py::build_review_comments`) — ej. `boleta_taxi_01 (Marcada para Revision)` — para
+  que al confirmar los datos baste con borrar el sufijo en vez de escribir el
+  nombre/descripción desde cero.
 - **Currency** usa la lista fija de la hoja "Cheat Sheet" del Excel: `CLP, USD, BRL,
   ARG, PEN, COP, EUR`. Nota: la plantilla usa **"ARG"**, no el código ISO-4217 "ARS",
   para pesos argentinos — es una particularidad de esta plantilla, no un error de
@@ -250,8 +252,9 @@ acumulación de tokens/costo estimado (`tests/test_cost.py`: suma entre llamadas
 de costo, formato del resumen) más un test de integración en `tests/test_main.py` que
 mockea `extract_receipt` para dos boletas y verifica que el resumen se imprime al final
 de `run()` con el total correcto; y `_build_expense_row` (`tests/test_main.py`): boleta
-para revisión con monto → se escribe con `REVIEW_COMMENTS_TEXT`, boleta OK → mantiene
-Comments de nombre de archivo sin extensión, boleta para revisión sin monto → no se escribe
+para revisión con monto → se escribe con `build_review_comments` (nombre sin extensión +
+`REVIEW_COMMENTS_SUFFIX`), boleta OK → mantiene Comments de nombre de archivo sin
+extensión, boleta para revisión sin monto → no se escribe
 (sin cambios), más un test de integración que corre `run()` con tres boletas mockeando
 `process_file` y confirma que la fila de revisión-con-monto queda en el Excel, la de
 revisión-sin-monto no, y que `auditoria.xlsx` tiene pestaña para ambas boletas REVIEW

@@ -80,7 +80,14 @@ def build_comments(filename: str) -> str:
     return Path(filename).stem
 
 
-REVIEW_COMMENTS_TEXT = "Boleta para revisión, mirar auditoría"
+REVIEW_COMMENTS_SUFFIX = " (Marcada para Revision)"
+
+
+def build_review_comments(filename: str) -> str:
+    # Mismo nombre sin extensión que las filas OK, con un sufijo agregado: al
+    # confirmar los datos basta con borrar el sufijo, no hay que escribir el
+    # nombre/descripción desde cero.
+    return f"{build_comments(filename)}{REVIEW_COMMENTS_SUFFIX}"
 
 
 def _build_expense_row(
@@ -90,8 +97,8 @@ def _build_expense_row(
 
     Se escribe la fila con los valores que sí se pudieron extraer aunque la boleta
     haya quedado marcada para revisión (la marca se mantiene en el audit report;
-    esto no la elimina). En ese caso Comments avisa que hay que mirar la auditoría,
-    en vez del nombre de archivo + fecha que llevan las filas OK.
+    esto no la elimina). En ese caso Comments lleva el sufijo de revisión, en vez
+    del nombre de archivo solo que llevan las filas OK.
     """
     if result.amount is None:
         return None
@@ -100,7 +107,7 @@ def _build_expense_row(
     if validation.ok:
         comments = build_comments(file_path.name)
     else:
-        comments = REVIEW_COMMENTS_TEXT
+        comments = build_review_comments(file_path.name)
 
     return ExpenseRow(
         date=coerced_date,

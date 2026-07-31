@@ -253,7 +253,7 @@ Hoja `Expense Report`, encabezado en la fila 8, datos desde la fila 9:
 | FX | Sí | `1` para CLP (no se pregunta); para el resto, el valor que el usuario ingresó por consola para esa moneda |
 | Amount in CLP | Sí, como fórmula | `=FX*Amount` (ej. `=F9*D9`); se recalcula solo al editar FX a mano |
 | Expense Type | Sí | Una de las 22 categorías fijas de la hoja "Cheat Sheet" |
-| Comments | Sí | Nombre del archivo de origen, sin extensión; en filas para revisión, "Boleta para revisión, mirar auditoría" (ver regla de negocio abajo) |
+| Comments | Sí | Nombre del archivo de origen, sin extensión; en filas para revisión, ese mismo nombre más el sufijo " (Marcada para Revision)" (ver regla de negocio abajo) |
 
 Cada corrida genera el Excel a partir de una copia de la plantilla original (nunca un
 archivo desde cero), escribiendo desde la fila 9 hasta la 32 como máximo — ese es el
@@ -313,8 +313,10 @@ el resto de los casos (ej. `464.717` → 464717).
 **Formato de Comments**: en filas "OK", el nombre del archivo de origen de la boleta
 sin su extensión (`Path(...).stem`, que remueve solo la última extensión — ej.
 `boleta.lima.01.jpg` → `boleta.lima.01`). En filas marcadas para revisión (pero con
-monto determinado), Comments es siempre el texto fijo "Boleta para revisión, mirar
-auditoría", sin importar el nombre de archivo.
+monto determinado), Comments es ese mismo nombre sin extensión más el sufijo
+" (Marcada para Revision)" — ej. `boleta_taxi_01 (Marcada para Revision)` — para que al
+confirmar los datos baste con borrar el sufijo en vez de escribir la descripción desde
+cero.
 
 **Boletas para revisión con monto determinado sí se escriben en el Excel**: antes,
 cualquier boleta marcada para revisión quedaba excluida del Excel de rendición por

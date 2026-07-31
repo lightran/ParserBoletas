@@ -11,11 +11,12 @@ import preprocess
 from audit_writer import INDEX_SHEET_NAME
 from extract import ExtractionResult
 from main import (
-    REVIEW_COMMENTS_TEXT,
+    REVIEW_COMMENTS_SUFFIX,
     _build_expense_row,
     _ensure_utf8_console,
     _format_date_like_excel,
     build_comments,
+    build_review_comments,
     prompt_fx_rates,
     prompt_report_description,
     sanitize_filename_component,
@@ -162,9 +163,15 @@ def _make_ok_result(**overrides) -> ExtractionResult:
     return ExtractionResult(**defaults)
 
 
+def test_build_review_comments_appends_suffix_to_filename_stem():
+    result = build_review_comments("boleta_taxi_01.jpg")
+    assert result == "boleta_taxi_01 (Marcada para Revision)"
+
+
 def test_build_expense_row_review_with_amount_writes_row_with_review_comments():
     # Boleta marcada para revisión (ej. moneda no determinada) pero con monto sí
-    # determinado: la fila se escribe, con Comments fijo avisando revisar la auditoría.
+    # determinado: la fila se escribe, con Comments = nombre sin extensión + sufijo
+    # de revisión (para poder confirmarla borrando solo el sufijo).
     result = _make_ok_result(currency=None)
     validation = ValidationResult(status="REVIEW", reasons=["no se pudo determinar la moneda"])
 
@@ -173,7 +180,7 @@ def test_build_expense_row_review_with_amount_writes_row_with_review_comments():
     assert row is not None
     assert row.amount == 100.0
     assert row.currency is None
-    assert row.comments == REVIEW_COMMENTS_TEXT == "Boleta para revisión, mirar auditoría"
+    assert row.comments == "boleta" + REVIEW_COMMENTS_SUFFIX == "boleta (Marcada para Revision)"
 
 
 def test_build_expense_row_ok_keeps_filename_without_extension_comments():
@@ -247,7 +254,7 @@ def test_run_writes_review_rows_with_amount_and_keeps_review_marking(tmp_path, m
     ]
     # Solo 2 filas escritas: la OK y la de revisión CON monto (no la de revisión sin monto).
     assert len(written_comments) == 2
-    assert REVIEW_COMMENTS_TEXT in written_comments
+    assert "review_with_amount" + REVIEW_COMMENTS_SUFFIX in written_comments
     assert "ok" in written_comments
     assert not any("review_without_amount" in c for c in written_comments)
 
