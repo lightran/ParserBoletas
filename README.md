@@ -253,7 +253,7 @@ Hoja `Expense Report`, encabezado en la fila 8, datos desde la fila 9:
 | FX | Sí | `1` para CLP (no se pregunta); para el resto, el valor que el usuario ingresó por consola para esa moneda |
 | Amount in CLP | Sí, como fórmula | `=FX*Amount` (ej. `=F9*D9`); se recalcula solo al editar FX a mano |
 | Expense Type | Sí | Una de las 22 categorías fijas de la hoja "Cheat Sheet" |
-| Comments | Sí | `<nombre de archivo> en la fecha <fecha>`; en filas para revisión, "Boleta para revisión, mirar auditoría" (ver regla de negocio abajo) |
+| Comments | Sí | Nombre del archivo de origen, sin extensión; en filas para revisión, "Boleta para revisión, mirar auditoría" (ver regla de negocio abajo) |
 
 Cada corrida genera el Excel a partir de una copia de la plantilla original (nunca un
 archivo desde cero), escribiendo desde la fila 9 hasta la 32 como máximo — ese es el
@@ -310,13 +310,11 @@ es el decimal; si aparece un solo tipo de separador, se interpreta como decimal 
 si aparece una vez y el último grupo tiene 1-2 dígitos (ej. `235.40`), y como miles en
 el resto de los casos (ej. `464.717` → 464717).
 
-**Formato de Comments**: en filas "OK", `<nombre de archivo> en la fecha <fecha>`, donde
-`<nombre de archivo>` es el archivo de origen de la boleta y `<fecha>` usa el mismo
-formato que la columna Date (ej. `27-May-26`). Si no se pudo extraer la fecha de la
-boleta, Comments queda solo con el nombre de archivo, sin el sufijo — una boleta sin
-fecha legible igual puede quedar "OK" y generar su fila. En filas marcadas para
-revisión (pero con monto determinado), Comments es siempre el texto fijo "Boleta para
-revisión, mirar auditoría", sin importar nombre de archivo ni fecha.
+**Formato de Comments**: en filas "OK", el nombre del archivo de origen de la boleta
+sin su extensión (`Path(...).stem`, que remueve solo la última extensión — ej.
+`boleta.lima.01.jpg` → `boleta.lima.01`). En filas marcadas para revisión (pero con
+monto determinado), Comments es siempre el texto fijo "Boleta para revisión, mirar
+auditoría", sin importar el nombre de archivo.
 
 **Boletas para revisión con monto determinado sí se escriben en el Excel**: antes,
 cualquier boleta marcada para revisión quedaba excluida del Excel de rendición por

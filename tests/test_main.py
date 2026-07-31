@@ -62,15 +62,14 @@ def test_format_date_like_excel_does_not_zero_pad_day():
     assert _format_date_like_excel(date(2026, 6, 7)) == "7-Jun-26"
 
 
-def test_build_comments_with_date():
-    result = build_comments("Taxi from Home to SCL Airport Invoice.jpg", "7-Jun-26")
-    assert result == "Taxi from Home to SCL Airport Invoice.jpg en la fecha 7-Jun-26"
+def test_build_comments_strips_extension():
+    result = build_comments("Taxi to Kyndryl.pdf")
+    assert result == "Taxi to Kyndryl"
 
 
-def test_build_comments_without_date():
-    # Sin fecha extraíble: solo el nombre de archivo, sin sufijo.
-    result = build_comments("Taxi to Kyndryl.pdf", None)
-    assert result == "Taxi to Kyndryl.pdf"
+def test_build_comments_strips_only_last_extension_with_multiple_dots():
+    result = build_comments("boleta.lima.01.jpg")
+    assert result == "boleta.lima.01"
 
 
 def test_run_prints_execution_summary_with_accumulated_usage(tmp_path, monkeypatch, capsys):
@@ -177,14 +176,14 @@ def test_build_expense_row_review_with_amount_writes_row_with_review_comments():
     assert row.comments == REVIEW_COMMENTS_TEXT == "Boleta para revisión, mirar auditoría"
 
 
-def test_build_expense_row_ok_keeps_filename_date_comments():
+def test_build_expense_row_ok_keeps_filename_without_extension_comments():
     result = _make_ok_result()
     validation = ValidationResult(status="OK", reasons=[])
 
     row = _build_expense_row(Path("Taxi to Kyndryl.pdf"), result, validation)
 
     assert row is not None
-    assert row.comments == "Taxi to Kyndryl.pdf en la fecha 12-Jun-26"
+    assert row.comments == "Taxi to Kyndryl"
 
 
 def test_build_expense_row_review_without_amount_returns_none():
@@ -249,7 +248,7 @@ def test_run_writes_review_rows_with_amount_and_keeps_review_marking(tmp_path, m
     # Solo 2 filas escritas: la OK y la de revisión CON monto (no la de revisión sin monto).
     assert len(written_comments) == 2
     assert REVIEW_COMMENTS_TEXT in written_comments
-    assert any(c.startswith("ok.jpg en la fecha") for c in written_comments)
+    assert "ok" in written_comments
     assert not any("review_without_amount" in c for c in written_comments)
 
     # El .xlsx de auditoría tiene una pestaña por boleta REVIEW (ok.jpg no tiene, ya

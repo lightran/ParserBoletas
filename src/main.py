@@ -74,10 +74,10 @@ def _format_date_like_excel(d: date_cls) -> str:
     return f"{d.day}-{_MONTH_ABBR[d.month - 1]}-{d.year % 100:02d}"
 
 
-def build_comments(filename: str, date_str: Optional[str]) -> str:
-    if date_str:
-        return f"{filename} en la fecha {date_str}"
-    return filename
+def build_comments(filename: str) -> str:
+    # El nombre de archivo es la descripción de la rendición; sin extensión y sin
+    # fecha (Path.stem remueve solo la última extensión: "a.b.jpg" -> "a.b").
+    return Path(filename).stem
 
 
 REVIEW_COMMENTS_TEXT = "Boleta para revisión, mirar auditoría"
@@ -98,8 +98,7 @@ def _build_expense_row(
 
     coerced_date = _coerce_date(result.date)
     if validation.ok:
-        formatted_date = _format_date_like_excel(coerced_date) if coerced_date else None
-        comments = build_comments(file_path.name, formatted_date)
+        comments = build_comments(file_path.name)
     else:
         comments = REVIEW_COMMENTS_TEXT
 

@@ -96,17 +96,17 @@ Amount in CLP | Expense Type | Comments`.
   FX). **Amount in CLP se recalcula solo** porque se escribe como fórmula.
 - **Amount in CLP** se escribe como fórmula de Excel `=F{fila}*D{fila}` (FX×Amount), no
   como número fijo, precisamente para que se recalcule al editar FX a mano.
-- **Comments**: en filas "OK" se arma como `<nombre de archivo> en la fecha <fecha>`
-  (`main.py::build_comments`), donde `<nombre de archivo>` es el archivo de origen de la
-  boleta y `<fecha>` usa el mismo formato que la columna Date (`27-May-26`, vía
-  `_format_date_like_excel`). Si no se pudo extraer la fecha, Comments queda con solo el
-  nombre de archivo (sin sufijo). Por eso `validate.py` **no** exige que la fecha esté
-  presente para que una boleta quede "OK" (solo valida el formato si vino) — a
-  diferencia de un formato de Comments anterior que sí la exigía. `extract.py` todavía
-  extrae un campo `time` (hora de emisión) que quedó de ese formato anterior, pero ya no
-  lo usa ni lo valida nada: es inerte. En filas marcadas para revisión pero con monto
-  determinado, Comments es el texto fijo `main.py::REVIEW_COMMENTS_TEXT` = "Boleta para
-  revisión, mirar auditoría" (ver más abajo).
+- **Comments**: en filas "OK" es el nombre del archivo de origen de la boleta, **sin su
+  extensión** (`main.py::build_comments`, vía `Path(...).stem` — remueve solo la última
+  extensión, así que `boleta.lima.01.jpg` → `boleta.lima.01`). No incluye la fecha.
+  `validate.py` **no** exige que la fecha esté presente para que una boleta quede "OK"
+  (solo valida el formato si vino) — regla independiente del formato de Comments, que
+  sigue vigente porque una boleta sin fecha legible igual debe poder quedar "OK".
+  `extract.py` todavía extrae un campo `time` (hora de emisión) que quedó de un formato
+  de Comments anterior, pero ya no lo usa ni lo valida nada: es inerte. En filas
+  marcadas para revisión pero con monto determinado, Comments es el texto fijo
+  `main.py::REVIEW_COMMENTS_TEXT` = "Boleta para revisión, mirar auditoría" (ver más
+  abajo).
 - **Currency** usa la lista fija de la hoja "Cheat Sheet" del Excel: `CLP, USD, BRL,
   ARG, PEN, COP, EUR`. Nota: la plantilla usa **"ARG"**, no el código ISO-4217 "ARS",
   para pesos argentinos — es una particularidad de esta plantilla, no un error de
@@ -243,14 +243,15 @@ preservación de la fórmula de la fila de total y de los dropdowns de Currency/
 Type, el error `TemplateCapacityError` al exceder el cupo de filas, y el estampado de la
 fecha de ejecución en D6/F39 (mismo valor en ambas, cada una con su propio number_format
 preservado, sin afectar la columna Date por fila); el armado de Comments
-(`tests/test_main.py`: con fecha, sin fecha) más el caso de `validate.py` que confirma
+(`tests/test_main.py`: nombre de archivo sin extensión, remueve solo la última
+extensión con nombres de varios puntos) más el caso de `validate.py` que confirma
 que una boleta sin fecha sigue quedando "OK" (`tests/test_validate.py`); y la
 acumulación de tokens/costo estimado (`tests/test_cost.py`: suma entre llamadas, fórmula
 de costo, formato del resumen) más un test de integración en `tests/test_main.py` que
 mockea `extract_receipt` para dos boletas y verifica que el resumen se imprime al final
 de `run()` con el total correcto; y `_build_expense_row` (`tests/test_main.py`): boleta
 para revisión con monto → se escribe con `REVIEW_COMMENTS_TEXT`, boleta OK → mantiene
-Comments de nombre de archivo + fecha, boleta para revisión sin monto → no se escribe
+Comments de nombre de archivo sin extensión, boleta para revisión sin monto → no se escribe
 (sin cambios), más un test de integración que corre `run()` con tres boletas mockeando
 `process_file` y confirma que la fila de revisión-con-monto queda en el Excel, la de
 revisión-sin-monto no, y que `auditoria.xlsx` tiene pestaña para ambas boletas REVIEW
