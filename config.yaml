@@ -65,7 +65,9 @@ excel:
   cost_centre: null      # idem para D5
 
 output:
-  audit_report_path: "output/audit_report.csv"
+  # .xlsx: una pestaña por boleta marcada para revisión (motivo + valores extraídos +
+  # imagen original embebida) más una pestaña índice. No se genera si no hubo casos.
+  audit_report_path: "output/auditoria.xlsx"
   default_excel_output_path: "output/Expense_Report.xlsx"
 
 # Precios oficiales de Anthropic por millón de tokens, para el modelo configurado

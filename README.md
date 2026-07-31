@@ -11,6 +11,7 @@ rendición de gastos con el formato de
 - [Ejecución](#ejecución)
 - [Mecánica de funcionamiento](#mecánica-de-funcionamiento)
 - [Esquema del Excel de salida](#esquema-del-excel-de-salida)
+- [Reporte de auditoría](#reporte-de-auditoría)
 - [Reglas de negocio importantes](#reglas-de-negocio-importantes)
 - [Estructura del proyecto](#estructura-del-proyecto)
 - [Tests](#tests)
@@ -21,10 +22,16 @@ rendición de gastos con el formato de
 ### Requisitos
 
 - Python 3.9+
-- Una API key de Anthropic (variable de entorno `ANTHROPIC_API_KEY`) — **nunca** se
-  hardcodea en el código ni en `config.yaml`.
+- Una API key de Anthropic — **nunca** se hardcodea en el código. Se resuelve en este
+  orden (ver "API key de Anthropic" abajo): variable de entorno `ANTHROPIC_API_KEY` si
+  ya está definida, si no el archivo local `secrets.yaml`, si no la pide por consola y
+  la guarda ahí.
+- **Windows**: funciona igual con Python 3.9+ desde [python.org](https://www.python.org/downloads/windows/)
+  (marcar "Add python.exe to PATH" en el instalador) o desde Microsoft Store. No hace
+  falta instalar nada más (sin poppler, sin Tesseract — ver "Compatibilidad con
+  Windows" abajo).
 
-### Instalación estándar (con pip disponible)
+### Instalación estándar (Linux/macOS, con pip disponible)
 
 ```bash
 python3 -m venv venv
@@ -32,7 +39,19 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Instalación en un entorno sin pip / sin sudo
+### Instalación en Windows
+
+```powershell
+py -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+Todas las dependencias en `requirements.txt` tienen wheels precompilados para Windows
+en PyPI (`opencv-python-headless`, `pymupdf`, `pillow`, etc.) — no requieren compilador
+ni instalar nada por fuera de `pip`.
+
+### Instalación en un entorno sin pip / sin sudo (Linux)
 
 Si `python3 -m venv` falla porque `ensurepip` no está disponible y no hay acceso a
 `sudo` para instalar `python3-venv` o `python3-pip` vía `apt`, se puede bootstrapear
@@ -48,21 +67,51 @@ venv/bin/pip install -r requirements.txt
 A partir de ahí, usa `venv/bin/python` y `venv/bin/pip` (o activa el venv con
 `source venv/bin/activate`) para todo lo demás.
 
-### Variable de entorno de la API key
+### API key de Anthropic
+
+No hace falta configurar nada de antemano. La primera vez que corres el pipeline sin
+`ANTHROPIC_API_KEY` seteada, te la pide por consola (sin mostrarla en pantalla, vía
+`getpass`) y la guarda en `secrets.yaml` (en el directorio desde donde corres el
+comando, o la ruta que pases con `--secrets`) para que no te la vuelva a pedir. Ese
+archivo:
+
+- **Es distinto de `config.yaml`** — solo guarda el token, nada de parámetros.
+- **Ya está en `.gitignore`**, nunca se sube al repo.
+- Guarda la key en **texto plano** (es la única forma simple de persistirla
+  localmente) — no lo compartas ni lo pegues en tickets o chats.
+
+Si preferís seguir usando la variable de entorno (por ejemplo en CI), definila antes de
+correr el comando y tiene prioridad sobre el archivo:
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
+export ANTHROPIC_API_KEY=sk-ant-...        # Linux/macOS
+$env:ANTHROPIC_API_KEY = "sk-ant-..."      # Windows PowerShell
 ```
 
-Sin esta variable, el pipeline no revienta: cada boleta queda marcada automáticamente
-para revisión manual con el motivo "ANTHROPIC_API_KEY no está definida" en el reporte
-de auditoría.
+Si el token termina siendo inválido o falta, cada boleta queda marcada automáticamente
+para revisión manual con el motivo correspondiente en el reporte de auditoría — el
+pipeline no revienta.
+
+### Compatibilidad con Windows
+
+El resto del pipeline ya funcionaba en Windows sin cambios: todo el manejo de archivos
+usa `pathlib.Path` (nada de rutas `/home/...` hardcodeadas), no hay comandos de shell
+propios de Unix, y la rasterización de PDF usa PyMuPDF (`fitz`), que se instala solo
+con `pip` — a diferencia de `pdf2image`, no necesita instalar poppler aparte. **No se
+usa Tesseract en ningún lado** — el único camino de extracción es visión por Claude, así
+que no hay ningún binario externo que instalar. Lo único que hacía falta era forzar
+UTF-8 en la consola (los mensajes en español usan tildes, `──` y `$`, que pueden fallar
+con `UnicodeEncodeError` en una consola Windows con code page legacy tipo cp1252) — el
+programa lo hace solo al arrancar, no requiere ninguna configuración de tu parte.
 
 ## Ejecución
 
 ```bash
-python src/main.py boletas/ --output output/Expense_Report.xlsx --audit output/audit_report.csv
+python src/main.py boletas/ --output output/Expense_Report.xlsx --audit output/auditoria.xlsx
 ```
+
+Mismo comando en Windows (PowerShell o cmd), una vez activado el venv — no hace falta
+`python3`, con `python` alcanza porque el venv ya apunta al intérprete correcto.
 
 ### Argumentos
 
@@ -71,7 +120,32 @@ python src/main.py boletas/ --output output/Expense_Report.xlsx --audit output/a
 | `input_dir` (posicional) | — | Carpeta con las boletas a procesar (jpg/jpeg/png/pdf) |
 | `--config` | `config.yaml` | Ruta a un archivo de configuración alternativo |
 | `--output` | `output.default_excel_output_path` en config.yaml | Ruta del Excel de rendición generado |
-| `--audit` | `output.audit_report_path` en config.yaml | Ruta del reporte de auditoría (CSV) |
+| `--audit` | `output.audit_report_path` en config.yaml | Ruta del reporte de auditoría (.xlsx) |
+| `--secrets` | `secrets.yaml` | Archivo local donde se guarda/lee la API key de Anthropic |
+
+### Es interactivo
+
+Después de leer todas las boletas y antes de escribir el Excel final, el programa pide
+por consola:
+
+1. **El FX de cada moneda distinta a CLP** presente en el reporte (una pregunta por
+   moneda, no por boleta). CLP no se pregunta — queda siempre en `1`. Acepta números
+   positivos con punto o coma decimal (`922`, `922.50`, `922,50`); si el valor no es
+   válido, vuelve a preguntar.
+2. **Una descripción del reporte**, para nombrar el archivo de salida.
+
+No hay modo no interactivo/batch todavía — correr el pipeline siempre requiere
+responder estas preguntas.
+
+### Nombre del archivo de salida
+
+El archivo de rendición **siempre** queda nombrado `Expense_Report_<descripción
+saneada>.xlsx`, en el mismo directorio que apunte `--output` (o el default de
+`config.yaml`) — el nombre de archivo que traiga `--output` se reemplaza, el
+directorio no. La descripción se sanea: los caracteres prohibidos en un nombre de
+archivo (`/ \ : * ? " < > |`) y los espacios (internos o de los extremos) se
+reemplazan por `_`, colapsando repeticiones — un solo criterio consistente para
+ambos casos.
 
 ### Salida en consola
 
@@ -80,7 +154,7 @@ corrida:
 
 ```
 Excel de rendición: output/Expense_Report.xlsx
-Reporte de auditoría: output/audit_report.csv
+Reporte de auditoría: output/auditoria.xlsx
 Resumen: 9 OK, 3 para revisión, 12 total
 
 ── Resumen de ejecución ──
@@ -129,26 +203,33 @@ boletas/*.{jpg,png,pdf}
         │             vino), y umbral de confianza. Decide status "OK" o "REVIEW" y
         │             guarda los motivos.
         ▼
+        (entremedio: se pregunta por consola el FX de cada moneda no-CLP y la
+         descripción del reporte — ver "Es interactivo" arriba)
+        ▼
 5a. excel_writer.py — si se determinó el monto total (esté "OK" o marcada para
         │              revisión): se agrega como fila nueva al Excel de salida (copia
-        │              de la plantilla, con las filas de ejemplo limpiadas). FX se
-        │              escribe en 1 y Amount in CLP como fórmula "=FX*Amount",
+        │              de la plantilla, con las filas de ejemplo limpiadas). FX es 1
+        │              para CLP o el valor que ingresó el usuario para esa moneda, y
+        │              Amount in CLP queda como fórmula "=FX*Amount",
         │              preservando el dropdown de Currency/Expense Type y la fórmula
         │              de la fila de total que trae la plantilla. También estampa la
         │              fecha de ejecución en los dos campos de fecha del encabezado
         │              (Date Submitted y el Date del bloque de firma).
-5b. audit_report.csv — TODAS las boletas (OK y REVIEW) quedan registradas acá con:
-                        archivo de origen, campos extraídos, confianza y motivo de
-                        revisión si aplica. Así se audita cada decisión del pipeline.
+5b. audit_writer.py — cada boleta marcada para revisión (las OK no) queda en su
+                        propia pestaña de auditoria.xlsx: motivo, valores extraídos
+                        (monto/moneda/fecha/archivo) y la imagen ORIGINAL de la
+                        boleta embebida, para cotejar a simple vista. Más una
+                        pestaña índice con hipervínculos a cada caso.
 ```
 
-Una boleta marcada para revisión **sí se escribe** en el Excel con los datos que se
-pudieron extraer, siempre que se haya determinado el monto total — la marca de revisión
-no desaparece, sigue registrada en `audit_report.csv` y en el resumen de consola, y en
-la fila del Excel la columna Comments avisa que hay que mirar la auditoría (ver más
-abajo). Si el monto total **no** se pudo determinar, la boleta no se escribe en el
-Excel en absoluto — solo queda en el reporte de auditoría, esté OK o no (aunque en la
-práctica una boleta sin monto siempre queda para revisión).
+Una boleta marcada para revisión **sí se escribe** en el Excel de rendición con los
+datos que se pudieron extraer, siempre que se haya determinado el monto total — la
+marca de revisión no desaparece, sigue teniendo su pestaña en `auditoria.xlsx` y su
+conteo en el resumen de consola, y en la fila del Excel de rendición la columna
+Comments avisa que hay que mirar la auditoría (ver más abajo). Si el monto total **no**
+se pudo determinar, la boleta no se escribe en el Excel de rendición en absoluto — solo
+queda en `auditoria.xlsx` (aunque en la práctica una boleta sin monto siempre queda
+para revisión, así que siempre tiene su pestaña).
 
 ### Por qué el camino principal es visión y no OCR clásico
 
@@ -169,7 +250,7 @@ Hoja `Expense Report`, encabezado en la fila 8, datos desde la fila 9:
 | Date | Sí | Fecha de la transacción (no de vencimiento) |
 | Amount | Sí | Monto total en la moneda original (sin conversión) |
 | Currency | Sí | Uno de: `CLP, USD, BRL, ARG, PEN, COP, EUR` (lista fija de la plantilla) |
-| FX | Sí, siempre `1` | v1 no hace conversión de divisas; el usuario ajusta el FX real a mano |
+| FX | Sí | `1` para CLP (no se pregunta); para el resto, el valor que el usuario ingresó por consola para esa moneda |
 | Amount in CLP | Sí, como fórmula | `=FX*Amount` (ej. `=F9*D9`); se recalcula solo al editar FX a mano |
 | Expense Type | Sí | Una de las 22 categorías fijas de la hoja "Cheat Sheet" |
 | Comments | Sí | `<nombre de archivo> en la fecha <fecha>`; en filas para revisión, "Boleta para revisión, mirar auditoría" (ver regla de negocio abajo) |
@@ -187,6 +268,27 @@ y el **Date** del bloque de firma "Approved by:" (celda `F39`). Ambos quedan con
 valor. No se toca el formato numérico de esas celdas — cada una conserva el que ya traía
 la plantilla (por eso pueden verse distintas entre sí, ej. `27-May-26` en una y
 `07-30-26` en la otra).
+
+## Reporte de auditoría
+
+`auditoria.xlsx` (formato configurable en `output.audit_report_path`) es un Excel
+separado del de rendición, pensado para revisar de un vistazo qué boletas necesitan
+confirmación manual:
+
+- **Una pestaña por boleta marcada para revisión** — las boletas OK no tienen pestaña
+  acá, ya quedaron resueltas en su fila del Excel de rendición. Cada pestaña trae el
+  motivo por el que se marcó para revisión, los valores que sí se extrajeron (monto,
+  moneda, fecha, nombre del archivo de origen), y **la imagen original de la boleta
+  embebida** (nunca la versión preprocesada/binarizada — se lee tal como la sacó el
+  usuario, y si el origen es un PDF, se rasteriza su primera página a imagen).
+- **Pestaña "Índice" primero**, con la lista de todos los casos (archivo + motivo) e
+  hipervínculos a cada pestaña, para navegar rápido.
+- Nombres de pestaña saneados (sin `: \ / ? * [ ]`) y truncados a 31 caracteres (límite
+  de Excel), con sufijo numérico si dos truncan al mismo nombre. El nombre completo del
+  archivo siempre queda dentro de la pestaña aunque el título esté truncado.
+- **Si la corrida no tuvo boletas para revisión, el archivo no se genera** (y si existe
+  uno de una corrida anterior en esa ruta, se borra, para que su ausencia sea una señal
+  confiable de "esta corrida no tuvo casos").
 
 ## Reglas de negocio importantes
 
@@ -217,12 +319,20 @@ revisión (pero con monto determinado), Comments es siempre el texto fijo "Bolet
 revisión, mirar auditoría", sin importar nombre de archivo ni fecha.
 
 **Boletas para revisión con monto determinado sí se escriben en el Excel**: antes,
-cualquier boleta marcada para revisión quedaba excluida del Excel por completo. Ahora,
-si se pudo determinar el monto total, la fila se escribe con los datos que sí se
-extrajeron (Amount, Currency, FX=1, Amount in CLP) — la única diferencia con una fila
-OK es el texto de Comments de arriba. La marca de revisión se sigue registrando igual
-que antes en `audit_report.csv` y en el resumen impreso en consola. Si el monto no se
-determinó, la boleta sigue sin escribirse (eso no cambió).
+cualquier boleta marcada para revisión quedaba excluida del Excel de rendición por
+completo. Ahora, si se pudo determinar el monto total, la fila se escribe con los
+datos que sí se extrajeron (Amount, Currency, FX, Amount in CLP) — la única diferencia
+con una fila OK es el texto de Comments de arriba. La marca de revisión se sigue
+registrando igual que antes, con su pestaña en `auditoria.xlsx` y su conteo en el
+resumen impreso en consola. Si el monto no se determinó, la boleta sigue sin escribirse
+en el Excel de rendición (eso no cambió).
+
+**FX se pregunta por consola, una vez por moneda**: después de leer todas las boletas,
+por cada moneda distinta a CLP presente en el reporte se pregunta su tipo de cambio a
+CLP — no por boleta, una sola vez por moneda, y el mismo valor se carga en todas las
+filas de esa moneda. CLP nunca se pregunta, queda fijo en `1`. Si una fila tiene moneda
+no determinada (`None`), también queda en FX=1 por no haber moneda contra la cual
+preguntar.
 
 ## Estructura del proyecto
 
@@ -236,10 +346,13 @@ ParserBoletas/
     currency.py       # parsing de números localizados + normalización de moneda
     validate.py       # consistencia de montos + umbral de confianza
     excel_writer.py   # escritura al formato de la plantilla
+    audit_writer.py   # reporte de auditoría .xlsx (pestaña por boleta a revisar + imagen)
     cost.py           # acumulación de tokens + estimación de costo de la corrida
+    api_key.py        # resuelve/guarda la API key (env var > secrets.yaml > prompt)
     main.py           # orquesta el pipeline sobre una carpeta
   tests/              # pytest, con casos armados a partir de boletas reales
-  config.yaml         # parámetros calibrables
+  config.yaml         # parámetros calibrables (nunca secretos)
+  secrets.yaml        # API key en texto plano — generado localmente, en .gitignore
   requirements.txt
   CLAUDE.md           # contexto técnico detallado para seguir iterando con Claude Code
   README.md           # este archivo
@@ -266,13 +379,34 @@ qué filas se escriben en el Excel (`main.py::_build_expense_row`): boleta para 
 con monto determinado → se escribe con Comments = "Boleta para revisión, mirar
 auditoría"; boleta OK → mantiene el formato de nombre de archivo + fecha; boleta para
 revisión sin monto → no se escribe (sin cambios); más un test de integración con tres
-boletas que confirma que la marca de revisión sigue apareciendo en el resumen de
-consola y en `audit_report.csv` aunque la fila ya se haya escrito en el Excel. No hacen
-llamadas a la API de Claude (la llamada de red está aislada y mockeada), así que corren
-sin necesidad de `ANTHROPIC_API_KEY`.
+boletas que confirma que `auditoria.xlsx` tiene pestaña para las dos boletas REVIEW
+(no para la OK). `audit_writer.py` (`tests/test_audit_writer.py`, usando boletas reales
+de `boletas/` — una jpeg y un PDF, para probar el rasterizado) tiene su propia
+cobertura: saneo/truncado/deduplicado de nombres de pestaña, contenido de cada pestaña
+(motivo + valores extraídos), que la imagen efectivamente quede embebida (verificado
+inspeccionando el .xlsx generado, no solo la API de openpyxl), los hipervínculos del
+índice, y que no se genera archivo (y se borra uno preexistente) cuando no hay casos
+para revisión; y el paso interactivo de FX/nombre de archivo (`tests/test_main.py`,
+mockeando `builtins.input`): saneo de nombre de archivo (caracteres prohibidos,
+espacios, guiones bajos repetidos), que la descripción se vuelva a pedir si sanea a
+vacío, que el FX se pregunte solo por monedas no-CLP presentes (nunca por CLP ni por
+moneda no determinada), que acepte punto o coma decimal y vuelva a preguntar ante
+negativos/cero/texto no numérico, y un test de integración de `run()` que confirma que
+el FX ingresado por consola queda cargado en las filas de esa moneda mientras CLP
+queda en 1; la resolución de la API key (`tests/test_api_key.py`, mockeando
+`getpass.getpass`): la variable de entorno tiene prioridad sobre el archivo, no
+pregunta si el archivo ya tiene un token válido, pregunta y guarda cuando no hay nada,
+reintenta si el input queda vacío, un token en blanco en el archivo se trata como
+ausente, y el archivo queda en UTF-8 con la advertencia de texto plano; y la
+compatibilidad con consola Windows (`_ensure_utf8_console` en `tests/test_main.py`):
+reconfigura stdout/stderr a UTF-8, tolera streams que no exponen `reconfigure()`, y un
+test que reproduce el `UnicodeEncodeError` real contra un stream `cp1252` y confirma
+que la reconfiguración lo evita. No hacen llamadas a la API de Claude (la llamada de
+red está aislada y mockeada), así que corren sin necesidad de `ANTHROPIC_API_KEY`.
 
 ## Fuera de alcance en v1
 
-- Conversión de divisas real: FX siempre se escribe en `1`, el usuario ajusta el valor real a mano.
+- Conversión de divisas automática (buscar el tipo de cambio solo): el FX se pide al
+  usuario por consola, una vez por moneda — no hay modo no interactivo/batch todavía.
 - Categorización difusa avanzada más allá de mapear a la lista fija de 23 tipos de gasto.
 - Integración con correo/buzón de gastos, interfaz gráfica.

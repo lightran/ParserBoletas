@@ -8,11 +8,65 @@ por boleta en un Excel de rendición de gastos con el formato exacto de
 ## Cómo correrlo
 
 ```bash
-export ANTHROPIC_API_KEY=sk-...
-python src/main.py boletas/ --output output/Expense_Report.xlsx --audit output/audit_report.csv
+python src/main.py boletas/ --output output/Expense_Report.xlsx --audit output/auditoria.xlsx
 ```
 
-Parámetros por defecto en `config.yaml` (`--config` para usar otro archivo).
+No hace falta exportar `ANTHROPIC_API_KEY` a mano: si no está seteada, el programa la
+pide por consola la primera vez y la guarda en `secrets.yaml` (ver sección "API key de
+Anthropic" abajo). Parámetros por defecto en `config.yaml` (`--config` para usar otro
+archivo).
+
+**Es interactivo**: después de leer todas las boletas, pide por consola el FX de cada
+moneda no-CLP y una descripción del reporte (ver sección de FX arriba y "Nombre del
+archivo de salida" más abajo) — no hay modo no interactivo/batch todavía.
+
+### Nombre del archivo de salida
+
+El nombre que se pasa en `--output` (o el default de `config.yaml`) **siempre se
+reemplaza** por `Expense_Report_<descripción saneada>.xlsx`, en el mismo directorio —
+`main.py::run()` hace `output_path.with_name(...)` después de pedir la descripción, así
+que el directorio de `--output` se respeta pero el nombre de archivo no.
+`sanitize_filename_component()` reemplaza los caracteres prohibidos (`/ \ : * ? " < > |`)
+y los espacios (internos o de los extremos) por `_`, colapsando repeticiones — un solo
+criterio consistente para ambos casos.
+
+## API key de Anthropic (`src/api_key.py`)
+
+`api_key.resolve_api_key(secrets_path)` resuelve la API key con esta prioridad, y deja
+`ANTHROPIC_API_KEY` seteada en el proceso para que `extract.py` la lea **sin ningún
+cambio** (sigue haciendo `os.environ.get("ANTHROPIC_API_KEY")` tal cual):
+
+1. La variable de entorno `ANTHROPIC_API_KEY`, si ya está definida (prioridad — permite
+   seguir usando el flujo anterior, ej. en CI).
+2. `secrets.yaml` (ruta configurable con `--secrets`, default `secrets.yaml` en el cwd),
+   si tiene un token guardado bajo la clave `anthropic_api_key`.
+3. La pide por consola vía `getpass.getpass()` (no hace eco en pantalla), reintentando
+   si queda vacía, y la guarda en `secrets.yaml` para la próxima corrida.
+
+Se llama una sola vez, en `main()`, **antes** de `run()` — `run()` y todo lo demás del
+pipeline quedan sin tocar. **`secrets.yaml` es un archivo separado de `config.yaml`** (no
+se mezcla con parámetros/precios) y está en `.gitignore`. Guarda la key en **texto
+plano** (única forma simple de persistirla localmente) — el archivo lleva un comentario
+de advertencia explícito, y se intenta `os.chmod(path, 0o600)` best-effort (en un
+`try/except OSError`, porque en Windows los bits POSIX no aplican igual y no debe
+romper la corrida).
+
+## Compatibilidad con Windows
+
+Revisado a fondo — la mayor parte del pipeline ya era compatible sin cambios: todo el
+manejo de archivos ya usaba `pathlib.Path` (nada de rutas POSIX hardcodeadas), no hay
+`subprocess`/comandos de shell en ningún lado, la rasterización de PDF ya usa
+PyMuPDF/`fitz` (no `pdf2image`/poppler), y Tesseract no se usa en ningún lado — el único
+camino de extracción es visión por Claude. Lo único que hacía falta:
+
+- **`main.py::_ensure_utf8_console()`**: reconfigura `sys.stdout`/`sys.stderr` a UTF-8
+  al arrancar (`stream.reconfigure(encoding="utf-8")`, en un `try/except` tolerante a
+  streams que no exponen ese método). Sin esto, los `print()` con tildes, `──` o `$`
+  (sobre todo `cost.format_summary`) pueden lanzar `UnicodeEncodeError` en una consola
+  Windows con code page legacy tipo cp1252. Se llama al inicio de `main()`, antes de
+  cualquier otra cosa.
+- Todo `open()` de texto que escribe el pipeline (el `secrets.yaml` nuevo incluido) usa
+  `encoding="utf-8"` explícito.
 
 ## Setup del entorno
 
@@ -31,9 +85,15 @@ Encabezado en fila 8, datos desde la fila 9: `Item | Date | Amount | Currency | 
 Amount in CLP | Expense Type | Comments`.
 
 - **FX** (el tipo de cambio a CLP — a veces referido como "columna FIX" en conversaciones
-  previas, mismo campo) se escribe siempre en `1` para cada fila nueva. La v1 no hace
-  conversión de divisas ni busca tipos de cambio; el usuario ajusta el FX real a mano
-  después, y **Amount in CLP se recalcula solo** porque se escribe como fórmula.
+  previas, mismo campo): CLP siempre queda en `1` (nunca se pregunta). Para cada moneda
+  distinta a CLP presente en el reporte, `main.py::run()` pregunta el FX por consola
+  **una vez por moneda** (no por boleta) después de leer todas las boletas y antes de
+  escribir el Excel — ver `main.py::prompt_fx_rates`/`_parse_positive_fx` (reutiliza
+  `currency.parse_localized_amount` para aceptar `922`, `922.50` o `922,50`; solo acepta
+  positivos, si no vuelve a preguntar). El valor se carga en `row.fx` de todas las filas
+  de esa moneda antes de llamar a `excel_writer.write_expense_report`. Filas con moneda
+  no determinada (`None`) quedan en `DEFAULT_FX`=1 (no hay moneda contra la cual pedir
+  FX). **Amount in CLP se recalcula solo** porque se escribe como fórmula.
 - **Amount in CLP** se escribe como fórmula de Excel `=F{fila}*D{fila}` (FX×Amount), no
   como número fijo, precisamente para que se recalcule al editar FX a mano.
 - **Comments**: en filas "OK" se arma como `<nombre de archivo> en la fecha <fecha>`
@@ -69,15 +129,33 @@ nunca un archivo desde cero) desde la fila `first_data_row` (9) hasta `last_data
 se escribe cualquier boleta —OK o marcada para revisión— en la que se haya podido
 determinar el monto total (`result.amount is not None`); si no se determinó el monto, no
 se escribe ninguna fila, esté OK o no (ese caso no cambió). La marca de revisión en sí
-nunca desaparece: `audit_entries`/`audit_report.csv` siguen registrando el `status`
-("OK"/"REVIEW") y el motivo de cada boleta, y el resumen impreso en consola sigue
-contando "N para revisión" — este comportamiento es independiente de si la fila se
-escribió o no en el Excel.
+nunca desaparece: toda boleta con `not validation.ok` va a `review_cases` y por lo tanto
+a una pestaña en `auditoria.xlsx` (ver sección siguiente), y el resumen impreso en
+consola sigue contando "N para revisión" — esto es independiente de si la fila llegó a
+escribirse en el Excel de rendición.
 
 **Límite real de la plantilla**: los dropdowns de Currency/Expense Type y la fila de
 total (`G33 = SUM(G9:G32)`) acotan los datos a las filas 9-32 (24 líneas). Si se intenta
 escribir más boletas OK que ese cupo, `write_expense_report` lanza `TemplateCapacityError`
 en vez de desbordarse silenciosamente sobre la fila de total.
+
+## Reporte de auditoría (auditoria.xlsx)
+
+`audit_writer.py::write_audit_report(review_cases, config, output_path)` genera el
+reporte de auditoría como `.xlsx`, **no** CSV (formato anterior, eliminado). Solo
+contiene boletas con `not validation.ok` — las boletas OK no aparecen acá, ya quedaron
+reflejadas en su fila del Excel de rendición. Una pestaña por caso (motivo de revisión +
+Amount/Currency/Date/nombre de archivo + la imagen **original** de la boleta embebida,
+nunca la versión preprocesada — se carga con `preprocess.load_pages()`, que no aplica
+deskew/denoise/CLAHE, a diferencia de `preprocess.preprocess_file()` que sí; para PDF
+rasteriza la primera página), más una pestaña "Índice" al principio con hipervínculos a
+cada caso. Nombres de pestaña saneados/truncados a 31 caracteres y deduplicados vía
+`sanitize_sheet_name()` — si dos archivos truncan al mismo nombre, se agrega un sufijo
+numérico. El nombre completo del archivo siempre queda dentro de la pestaña aunque el
+título esté truncado. **Si no hubo casos para revisión, no se genera el archivo** (y si
+existe uno de una corrida anterior en esa ruta, se borra, para que su ausencia siga
+siendo una señal confiable). La imagen se reescala a un ancho máximo de
+`audit_writer.MAX_IMAGE_WIDTH_PX` (700px) antes de embeberse, para no inflar el archivo.
 
 ## Uso de tokens y costo estimado
 
@@ -147,7 +225,10 @@ aparece un tipo de separador, se interpreta como decimal solo si aparece una vez
 
 ## Fuera de alcance en v1 (a propósito)
 
-- Conversión de divisas real: FX siempre se escribe en `1`, el usuario lo ajusta a mano.
+- Conversión de divisas automática/API de tipo de cambio: el FX se pide al usuario por
+  consola (una vez por moneda), no se busca solo. No hay forma no interactiva de
+  correr el pipeline todavía (`prompt_fx_rates`/`prompt_report_description` siempre
+  usan `input()`).
 - Categorización difusa avanzada más allá de mapear a la lista fija de 22 tipos.
 - Integración con correo/buzón de gastos, UI.
 
@@ -172,8 +253,32 @@ para revisión con monto → se escribe con `REVIEW_COMMENTS_TEXT`, boleta OK �
 Comments de nombre de archivo + fecha, boleta para revisión sin monto → no se escribe
 (sin cambios), más un test de integración que corre `run()` con tres boletas mockeando
 `process_file` y confirma que la fila de revisión-con-monto queda en el Excel, la de
-revisión-sin-monto no, y el resumen impreso y el `audit_report.csv` siguen marcando
-ambas como REVIEW. No hacen llamadas a la API de Claude —
-`extract.py` aísla la llamada de red en `_call_vision_api` para poder mockearla; la
-extracción real por visión no se ha probado en este entorno por falta de
+revisión-sin-monto no, y que `auditoria.xlsx` tiene pestaña para ambas boletas REVIEW
+(no para la OK); y `audit_writer.py` (`tests/test_audit_writer.py`, usando boletas
+reales — una jpeg y un PDF de `boletas/` — para probar el camino real de embebido de
+imagen incluyendo el rasterizado de PDF): saneo/truncado/deduplicado de nombres de
+pestaña, pestaña por caso con el motivo y los valores extraídos, imagen efectivamente
+embebida (verificado inspeccionando `xl/media/` dentro del .xlsx generado, no solo la
+API de openpyxl), hipervínculos del índice a cada pestaña, y que no se genera archivo
+(y se borra uno preexistente) cuando no hay casos para revisión; y el paso interactivo
+de FX/nombre de archivo (`tests/test_main.py`, mockeando `builtins.input` con
+`_mock_inputs()`): `sanitize_filename_component` (caracteres prohibidos, espacios
+internos/de los extremos, colapso de guiones bajos repetidos), `prompt_report_description`
+(reintenta si sanea a vacío), `prompt_fx_rates` (pregunta solo por monedas no-CLP
+presentes, nunca por CLP ni por moneda `None`, acepta punto o coma decimal, reintenta
+ante negativos/cero/no-numéricos), y un test de integración de `run()` que confirma que
+el FX ingresado queda cargado en las filas de esa moneda mientras CLP queda en 1 y
+Amount in CLP sigue siendo fórmula. Los tests de integración existentes de `run()`
+también tuvieron que empezar a mockear `builtins.input` (antes no lo necesitaban) porque
+ahora `run()` siempre pide la descripción del reporte. `src/api_key.py`
+(`tests/test_api_key.py`, mockeando `getpass.getpass`): prioridad de la variable de
+entorno sobre el archivo, que no pregunta si el archivo ya tiene token válido, que
+pregunta y guarda cuando no hay nada, reintento ante input vacío, token en blanco en el
+archivo se trata como ausente, el archivo queda en UTF-8 con la advertencia de texto
+plano, y manejo con `pathlib.Path` incluyendo creación de directorios anidados. Y
+`main._ensure_utf8_console` (`tests/test_main.py`): reconfigura stdout/stderr, tolera
+streams sin `reconfigure()`, y un test que reproduce el `UnicodeEncodeError` real contra
+un stream `cp1252` y confirma que la reconfiguración lo evita. No hacen llamadas a la
+API de Claude — `extract.py` aísla la llamada de red en `_call_vision_api` para poder
+mockearla; la extracción real por visión no se ha probado en este entorno por falta de
 `ANTHROPIC_API_KEY`.

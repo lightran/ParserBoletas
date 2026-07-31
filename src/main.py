@@ -2,22 +2,30 @@
 
 Uso:
     python src/main.py boletas/ --output output/Expense_Report.xlsx
+
+Una vez leídas todas las boletas y antes de escribir el Excel final, pide por
+consola el FX de cada moneda no-CLP presente en el reporte, y una descripción
+para el nombre del archivo — que siempre queda como
+"Expense_Report_<descripción saneada>.xlsx" en el directorio de `--output`,
+reemplazando el nombre de archivo indicado (no el directorio).
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
+import re
 import sys
 from datetime import date as date_cls
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Set
 
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import api_key
+import audit_writer
 import cost
 import currency
 import excel_writer
@@ -105,6 +113,54 @@ def _build_expense_row(
     )
 
 
+_FORBIDDEN_FILENAME_CHARS_RE = re.compile(r'[\/\\:*?"<>|]')
+
+
+def sanitize_filename_component(text: str) -> str:
+    """Sanea texto para usarlo como parte de un nombre de archivo: reemplaza los
+    caracteres prohibidos (/ \\ : * ? " < > |) y los espacios (internos o de los
+    extremos) por guion bajo, colapsando repeticiones."""
+    text = _FORBIDDEN_FILENAME_CHARS_RE.sub("_", text)
+    text = re.sub(r"\s+", "_", text)
+    text = re.sub(r"_+", "_", text)
+    return text.strip("_")
+
+
+def prompt_report_description() -> str:
+    """Pide al usuario una descripción para el nombre del archivo de salida."""
+    while True:
+        raw = input("Descripción del reporte (para el nombre del archivo): ")
+        sanitized = sanitize_filename_component(raw)
+        if sanitized:
+            return sanitized
+        print("La descripción queda vacía después de sanearla. Intenta de nuevo.")
+
+
+def _parse_positive_fx(raw: str) -> Optional[float]:
+    try:
+        value = currency.parse_localized_amount(raw)
+    except currency.CurrencyParseError:
+        return None
+    if value <= 0:
+        return None
+    return float(value)
+
+
+def prompt_fx_rates(currencies: Set[str]) -> Dict[str, float]:
+    """Pide al usuario el valor de FX (-> CLP) para cada moneda distinta a CLP en
+    `currencies`. CLP no se pregunta (su FX siempre es 1, ver excel_writer.DEFAULT_FX)."""
+    fx_rates: Dict[str, float] = {}
+    for code in sorted(c for c in currencies if c and c != "CLP"):
+        while True:
+            raw = input(f"Tipo de cambio (FX) para {code} -> CLP: ")
+            value = _parse_positive_fx(raw)
+            if value is not None:
+                fx_rates[code] = value
+                break
+            print("Valor inválido. Ingresa un número positivo (ej. 922 o 922,50).")
+    return fx_rates
+
+
 def process_file(file_path: Path, config: dict) -> tuple[ExtractionResult, validate.ValidationResult]:
     pages = preprocess.preprocess_file(file_path, config)
     result = extract_receipt(pages, config)
@@ -130,28 +186,19 @@ def run(input_dir: Path, config: dict, output_path: Path, audit_path: Path) -> N
         return
 
     rows_to_write: List[ExpenseRow] = []
-    audit_entries = []
+    review_cases: List[audit_writer.ReviewCase] = []
     total_usage = cost.TokenUsage()
+    n_ok = 0
 
     for file_path in files:
         print(f"Procesando {file_path.name}...")
         result, validation = process_file(file_path, config)
         total_usage.add(result.usage)
 
-        audit_entries.append(
-            {
-                "source_file": file_path.name,
-                "vendor": result.vendor,
-                "date": result.date,
-                "currency": result.currency,
-                "amount": result.amount,
-                "expense_type": result.expense_type,
-                "status": validation.status,
-                "confidence_overall": result.overall_confidence(),
-                "reasons": "; ".join(validation.reasons),
-                "notes": result.notes,
-            }
-        )
+        if validation.ok:
+            n_ok += 1
+        else:
+            review_cases.append((file_path, result, validation))
 
         row = _build_expense_row(file_path, result, validation)
         if row is not None:
@@ -159,47 +206,58 @@ def run(input_dir: Path, config: dict, output_path: Path, audit_path: Path) -> N
 
     rows_to_write.sort(key=lambda r: (r.date or date_cls.max, r.source_file))
 
-    excel_writer.write_expense_report(rows_to_write, config, output_path)
-    _write_audit_report(audit_entries, audit_path)
+    currencies_present = {row.currency for row in rows_to_write if row.currency}
+    fx_rates = prompt_fx_rates(currencies_present)
+    for row in rows_to_write:
+        row.fx = fx_rates.get(row.currency, excel_writer.DEFAULT_FX)
 
-    n_ok = sum(1 for e in audit_entries if e["status"] == "OK")
-    n_review = len(audit_entries) - n_ok
+    description = prompt_report_description()
+    output_path = output_path.with_name(f"Expense_Report_{description}.xlsx")
+
+    excel_writer.write_expense_report(rows_to_write, config, output_path)
+    audit_result_path = audit_writer.write_audit_report(review_cases, config, audit_path)
+
     print()
     print(f"Excel de rendición: {output_path}")
-    print(f"Reporte de auditoría: {audit_path}")
-    print(f"Resumen: {n_ok} OK, {n_review} para revisión, {len(audit_entries)} total")
+    if audit_result_path is not None:
+        print(f"Reporte de auditoría: {audit_result_path}")
+    else:
+        print("Reporte de auditoría: sin casos para revisión, no se generó archivo")
+    print(f"Resumen: {n_ok} OK, {len(review_cases)} para revisión, {len(files)} total")
     print()
     print(cost.format_summary(len(files), total_usage, config.get("pricing", {})))
 
 
-def _write_audit_report(entries: list[dict], audit_path: Path) -> None:
-    audit_path = Path(audit_path)
-    audit_path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = [
-        "source_file",
-        "vendor",
-        "date",
-        "currency",
-        "amount",
-        "expense_type",
-        "status",
-        "confidence_overall",
-        "reasons",
-        "notes",
-    ]
-    with open(audit_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(entries)
+def _ensure_utf8_console() -> None:
+    """Fuerza UTF-8 en stdout/stderr. Sin esto, en una consola Windows con code
+    page legacy (cp1252/cp437) los textos con tildes, "──" o "$" del resumen
+    pueden lanzar UnicodeEncodeError."""
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is not None and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8")
+            except (ValueError, OSError):
+                pass
 
 
 def main() -> None:
+    _ensure_utf8_console()
+
     parser = argparse.ArgumentParser(description="Procesa una carpeta de boletas de viaje.")
     parser.add_argument("input_dir", type=Path, help="Carpeta con boletas (jpg/png/pdf)")
     parser.add_argument("--config", type=Path, default=Path("config.yaml"))
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--audit", type=Path, default=None)
+    parser.add_argument(
+        "--secrets",
+        type=Path,
+        default=api_key.DEFAULT_SECRETS_PATH,
+        help="Archivo de secretos local con la API key de Anthropic",
+    )
     args = parser.parse_args()
+
+    api_key.resolve_api_key(args.secrets)
 
     config = load_config(args.config)
     output_path = args.output or Path(config["output"]["default_excel_output_path"])

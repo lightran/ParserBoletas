@@ -5,7 +5,9 @@ de Currency/Expense Type y la fórmula de la fila de total), limpia las filas de
 y escribe una fila por boleta procesada con éxito.
 
 - Currency: solo códigos de la lista fija de la plantilla (ver currency.py).
-- FX: siempre 1 (v1 no hace conversión de divisas; el usuario ajusta el FX real a mano).
+- FX: `row.fx` (default `DEFAULT_FX`=1, pero `main.py::run()` pide por consola el FX
+  real de cada moneda no-CLP antes de llamar a esta función y lo carga ahí; CLP y
+  monedas no determinadas quedan en 1).
 - Amount in CLP: fórmula de Excel "=FX*Amount" (se recalcula sola si el usuario edita FX).
 - Comments: en blanco (lo completa el usuario).
 - Date Submitted (D6) y Date del bloque "Approved by:" (F39): fecha de ejecución del
@@ -15,6 +17,7 @@ y escribe una fila por boleta procesada con éxito.
 from __future__ import annotations
 
 import re
+import warnings
 import zipfile
 from dataclasses import dataclass
 from xml.etree import ElementTree as ET
@@ -24,6 +27,15 @@ from typing import List, Optional
 
 import openpyxl
 from openpyxl.utils import get_column_letter
+
+# La plantilla trae dos extensiones de Excel que openpyxl no soporta al leer y por
+# las que emite UserWarning al cargarla: el <extLst> con los dropdowns de Currency/
+# Expense Type (x14:dataValidation) y una extensión de Mac Excel (mx:PLV). Son
+# inofensivas — el dropdown se reinyecta aparte al guardar (ver _restore_ext_lst) —
+# pero son ruido para quien corre el pipeline; se silencian solo durante esta carga.
+_KNOWN_HARMLESS_OPENPYXL_WARNING = (
+    r"(Data Validation extension|Unknown extension) is not supported and will be removed"
+)
 
 # Columnas de la hoja "Expense Report" (fila 8 = encabezado).
 COL_ITEM = 2       # B
@@ -161,7 +173,11 @@ def write_expense_report(
             f"en la plantilla (filas {first_row}-{last_data_row})."
         )
 
-    wb = openpyxl.load_workbook(template_path)
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message=_KNOWN_HARMLESS_OPENPYXL_WARNING, category=UserWarning
+        )
+        wb = openpyxl.load_workbook(template_path)
     ws = wb[sheet_name]
 
     _clear_data_rows(ws, first_row, last_data_row)
