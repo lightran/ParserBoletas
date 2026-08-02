@@ -128,14 +128,45 @@ Mismo comando en Windows (PowerShell o cmd), una vez activado el venv — no hac
 Después de leer todas las boletas y antes de escribir el Excel final, el programa pide
 por consola:
 
-1. **El FX de cada moneda distinta a CLP** presente en el reporte (una pregunta por
-   moneda, no por boleta). CLP no se pregunta — queda siempre en `1`. Acepta números
-   positivos con punto o coma decimal (`922`, `922.50`, `922,50`); si el valor no es
-   válido, vuelve a preguntar.
+1. **El FX de cada moneda distinta a CLP** presente en el reporte (CLP no se pregunta —
+   queda siempre en `1`):
+   - **USD**: se pregunta directo, un tipo de cambio USD → CLP (acepta punto o coma
+     decimal, ej. `922` o `922,50`; si el valor no es válido, vuelve a preguntar).
+   - **Cualquier otra moneda** (PEN, BRL, etc.): se calcula un **FX real**, con regla de
+     3 en dos pasos, a partir de la boleta que elijas y el USD que tu banco te cobró en
+     la tarjeta por esa compra — ver "FX real de moneda extranjera" más abajo. Este
+     cálculo queda documentado en la pestaña "Complementary info" del Excel de salida.
 2. **Una descripción del reporte**, para nombrar el archivo de salida.
 
 No hay modo no interactivo/batch todavía — correr el pipeline siempre requiere
 responder estas preguntas.
+
+### FX real de moneda extranjera
+
+Para cada moneda extranjera que no sea USD (ej. PEN, BRL), en vez de pedirte el tipo de
+cambio directamente, el programa te ayuda a calcularlo con el mismo criterio que exige
+el formulario ("usa el mismo tipo de cambio presentado en la cartola/bill de la
+tarjeta"):
+
+1. Te muestra una lista numerada de las boletas en esa moneda (archivo, monto, fecha) y
+   eliges cuál usar como referencia — normalmente la boleta cuyo movimiento ya ves
+   reflejado en tu cartola de tarjeta.
+2. Te pide el monto en USD que el banco cobró por esa compra en la tarjeta.
+3. Si ya ingresaste un tipo de cambio USD → CLP (porque también tenías boletas en USD),
+   lo reutiliza; si no, te lo pide aparte una sola vez (se reutiliza para todas las
+   monedas que lo necesiten).
+
+Con esos tres datos calcula, en dos pasos: `moneda origen → USD` (USD cobrado / monto de
+la boleta) y luego `→ CLP` (multiplicando por el tipo de cambio USD → CLP). Ese
+resultado es el FX que se usa en el reporte para esa moneda — **y queda documentado**,
+paso a paso, en una pestaña `Complementary info - <MONEDA>` del Excel de salida (una por
+cada moneda extranjera), junto con la foto de la boleta elegida. Si tu banco cobra el
+movimiento en tarjeta directamente en la moneda de origen o el proceso no aplica a tu
+caso, podés editar el FX a mano en el Excel después — la columna Amount in CLP se
+recalcula sola.
+
+Si el reporte no tiene ninguna moneda que necesite este cálculo (todo CLP, o CLP+USD),
+la pestaña "Complementary info" no aparece en el Excel de salida.
 
 ### Nombre del archivo de salida
 
@@ -250,7 +281,7 @@ Hoja `Expense Report`, encabezado en la fila 8, datos desde la fila 9:
 | Date | Sí | Fecha de la transacción (no de vencimiento) |
 | Amount | Sí | Monto total en la moneda original (sin conversión) |
 | Currency | Sí | Uno de: `CLP, USD, BRL, ARG, PEN, COP, EUR` (lista fija de la plantilla) |
-| FX | Sí | `1` para CLP (no se pregunta); para el resto, el valor que el usuario ingresó por consola para esa moneda |
+| FX | Sí | `1` para CLP (no se pregunta); `USD` se pregunta directo; el resto se calcula como FX real (regla de 3 en dos pasos) — ver "FX real de moneda extranjera" |
 | Amount in CLP | Sí, como fórmula | `=FX*Amount` (ej. `=F9*D9`); se recalcula solo al editar FX a mano |
 | Expense Type | Sí | Una de las 22 categorías fijas de la hoja "Cheat Sheet" |
 | Comments | Sí | Nombre del archivo de origen, sin extensión; en filas para revisión, ese mismo nombre más el sufijo " (Marcada para Revision)" (ver regla de negocio abajo) |
@@ -268,6 +299,16 @@ y el **Date** del bloque de firma "Approved by:" (celda `F39`). Ambos quedan con
 valor. No se toca el formato numérico de esas celdas — cada una conserva el que ya traía
 la plantilla (por eso pueden verse distintas entre sí, ej. `27-May-26` en una y
 `07-30-26` en la otra).
+
+### Pestaña "Complementary info"
+
+El Excel de salida trae, además de "Expense Report", una pestaña `Complementary info -
+<MONEDA>` por cada moneda extranjera (distinta de CLP y USD) presente en el reporte —
+ver "FX real de moneda extranjera" arriba para el detalle del cálculo que documenta.
+Trae la foto de la boleta que elegiste, dos tablas con el cálculo paso a paso, y dos
+espacios para tus propios screenshots del banco (listado de movimientos y tipo de
+cambio) que **tenés que completar vos a mano** — el programa no los toca. Si ninguna
+moneda del reporte necesita este cálculo (todo CLP, o CLP+USD), esta pestaña no aparece.
 
 ## Reporte de auditoría
 
@@ -327,12 +368,11 @@ registrando igual que antes, con su pestaña en `auditoria.xlsx` y su conteo en 
 resumen impreso en consola. Si el monto no se determinó, la boleta sigue sin escribirse
 en el Excel de rendición (eso no cambió).
 
-**FX se pregunta por consola, una vez por moneda**: después de leer todas las boletas,
-por cada moneda distinta a CLP presente en el reporte se pregunta su tipo de cambio a
-CLP — no por boleta, una sola vez por moneda, y el mismo valor se carga en todas las
-filas de esa moneda. CLP nunca se pregunta, queda fijo en `1`. Si una fila tiene moneda
-no determinada (`None`), también queda en FX=1 por no haber moneda contra la cual
-preguntar.
+**El FX se determina una vez por moneda**, después de leer todas las boletas, y el mismo
+valor se carga en todas las filas de esa moneda — no por boleta. CLP nunca se pregunta,
+queda fijo en `1`. USD se pregunta directo; el resto se calcula como FX real (ver "FX
+real de moneda extranjera" arriba). Si una fila tiene moneda no determinada (`None`),
+queda en FX=1 por no haber moneda contra la cual calcular nada.
 
 ## Estructura del proyecto
 
@@ -346,6 +386,7 @@ ParserBoletas/
     currency.py       # parsing de números localizados + normalización de moneda
     validate.py       # consistencia de montos + umbral de confianza
     excel_writer.py   # escritura al formato de la plantilla
+    complementary_info.py  # FX real por moneda extranjera (regla de 3) + pestaña "Complementary info"
     audit_writer.py   # reporte de auditoría .xlsx (pestaña por boleta a revisar + imagen)
     cost.py           # acumulación de tokens + estimación de costo de la corrida
     api_key.py        # resuelve/guarda la API key (env var > secrets.yaml > prompt)
@@ -389,11 +430,20 @@ inspeccionando el .xlsx generado, no solo la API de openpyxl), los hipervínculo
 para revisión; y el paso interactivo de FX/nombre de archivo (`tests/test_main.py`,
 mockeando `builtins.input`): saneo de nombre de archivo (caracteres prohibidos,
 espacios, guiones bajos repetidos), que la descripción se vuelva a pedir si sanea a
-vacío, que el FX se pregunte solo por monedas no-CLP presentes (nunca por CLP ni por
-moneda no determinada), que acepte punto o coma decimal y vuelva a preguntar ante
-negativos/cero/texto no numérico, y un test de integración de `run()` que confirma que
-el FX ingresado por consola queda cargado en las filas de esa moneda mientras CLP
-queda en 1; la resolución de la API key (`tests/test_api_key.py`, mockeando
+vacío, que acepte punto o coma decimal y vuelva a preguntar ante negativos/cero/texto no
+numérico, que USD se pregunte directo sin pasar por selección de boleta, que las demás
+monedas calculen su FX real reutilizando el FX de USD (o preguntando el tipo de cambio
+USD → CLP aparte si no hay boletas en USD, una sola vez aunque haya varias monedas), y
+un test de integración de `run()` que confirma que el FX resultante queda cargado en las
+filas de esa moneda mientras CLP queda en 1; `complementary_info.py`
+(`tests/test_complementary_info.py`, usando una boleta real y la plantilla real): el
+cálculo de FX real contra el ejemplo de referencia (223.50 PEN / 67.41 USD / TC 922 →
+278.09), que la pestaña "Complementary info" se elimina cuando no hay monedas que la
+necesiten, que se crea una pestaña "Complementary info - <MONEDA>" por cada moneda
+extranjera con las tablas y fórmulas correctas, que la imagen embebida es la boleta
+elegida (no el ejemplo de la plantilla), que las flechas conectoras sobreviven, y que
+dos monedas simultáneas generan pestañas independientes; la resolución de la API key
+(`tests/test_api_key.py`, mockeando
 `getpass.getpass`): la variable de entorno tiene prioridad sobre el archivo, no
 pregunta si el archivo ya tiene un token válido, pregunta y guarda cuando no hay nada,
 reintenta si el input queda vacío, un token en blanco en el archivo se trata como
@@ -406,7 +456,9 @@ red está aislada y mockeada), así que corren sin necesidad de `ANTHROPIC_API_K
 
 ## Fuera de alcance en v1
 
-- Conversión de divisas automática (buscar el tipo de cambio solo): el FX se pide al
-  usuario por consola, una vez por moneda — no hay modo no interactivo/batch todavía.
+- Conversión de divisas automática vía un servicio externo de tipo de cambio: el FX real
+  se calcula a partir de datos que ingresa el usuario por consola (boleta elegida + USD
+  cobrado por el banco), no se consulta ningún servicio — no hay modo no interactivo/
+  batch todavía.
 - Categorización difusa avanzada más allá de mapear a la lista fija de 23 tipos de gasto.
 - Integración con correo/buzón de gastos, interfaz gráfica.

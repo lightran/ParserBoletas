@@ -28,6 +28,8 @@ from typing import List, Optional
 import openpyxl
 from openpyxl.utils import get_column_letter
 
+import complementary_info
+
 # La plantilla trae dos extensiones de Excel que openpyxl no soporta al leer y por
 # las que emite UserWarning al cargarla: el <extLst> con los dropdowns de Currency/
 # Expense Type (x14:dataValidation) y una extensión de Mac Excel (mx:PLV). Son
@@ -75,6 +77,7 @@ class ExpenseRow:
     source_file: str
     fx: float = DEFAULT_FX
     comments: Optional[str] = None
+    file_path: Optional[Path] = None
 
 
 def _set_cell(ws, row: int, col: int, value) -> None:
@@ -158,7 +161,10 @@ def _restore_ext_lst(output_path: Path, sheet_name: str, ext_lst_xml: str) -> No
 
 
 def write_expense_report(
-    rows: List[ExpenseRow], config: dict, output_path: Path
+    rows: List[ExpenseRow],
+    config: dict,
+    output_path: Path,
+    conversions: Optional[List["complementary_info.CurrencyConversion"]] = None,
 ) -> Path:
     excel_cfg = config.get("excel", {})
     template_path = Path(excel_cfg.get("template_path"))
@@ -196,6 +202,7 @@ def write_expense_report(
 
     amount_col_letter = get_column_letter(COL_AMOUNT)
     fx_col_letter = get_column_letter(COL_FX)
+    fx_number_format = ws.cell(row=first_row, column=COL_FX).number_format
 
     for i, row in enumerate(rows):
         r = first_row + i
@@ -210,6 +217,11 @@ def write_expense_report(
         _set_cell(ws, r, COL_EXPENSE_TYPE, row.expense_type)
         _set_cell(ws, r, COL_COMMENTS, row.comments)
 
+    pdf_render_dpi = config.get("preprocess", {}).get("pdf_render_dpi", 300)
+    complementary_titles = complementary_info.apply_conversions(
+        wb, conversions or [], pdf_render_dpi, fx_number_format
+    )
+
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_path)
@@ -217,5 +229,7 @@ def write_expense_report(
     ext_lst = _extract_ext_lst(template_path, sheet_name)
     if ext_lst:
         _restore_ext_lst(output_path, sheet_name, ext_lst)
+
+    complementary_info.reinject_arrows(output_path, template_path, complementary_titles)
 
     return output_path

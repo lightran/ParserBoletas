@@ -3,10 +3,12 @@
 Uso:
     python src/main.py boletas/ --output output/Expense_Report.xlsx
 
-Una vez leídas todas las boletas y antes de escribir el Excel final, pide por
-consola el FX de cada moneda no-CLP presente en el reporte, y una descripción
-para el nombre del archivo — que siempre queda como
-"Expense_Report_<descripción saneada>.xlsx" en el directorio de `--output`,
+Una vez leídas todas las boletas y antes de escribir el Excel final, determina el FX
+(-> CLP) de cada moneda no-CLP presente en el reporte (ver `determine_fx`: USD se
+pregunta directo, el resto se calcula en dos pasos a partir de una boleta elegida por
+el usuario y el USD que cobró el banco — documentado en la pestaña "Complementary
+info" del Excel), y pide una descripción para el nombre del archivo — que siempre
+queda como "Expense_Report_<descripción saneada>.xlsx" en el directorio de `--output`,
 reemplazando el nombre de archivo indicado (no el directorio).
 """
 
@@ -18,7 +20,7 @@ import sys
 from datetime import date as date_cls
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional
 
 import yaml
 
@@ -26,11 +28,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import api_key
 import audit_writer
+import complementary_info
 import cost
 import currency
 import excel_writer
 import preprocess
 import validate
+from complementary_info import CurrencyConversion
 from excel_writer import ExpenseRow
 from extract import ExtractionResult, extract_receipt
 
@@ -116,6 +120,7 @@ def _build_expense_row(
         expense_type=result.expense_type,
         source_file=file_path.name,
         comments=comments,
+        file_path=file_path,
     )
 
 
@@ -152,19 +157,84 @@ def _parse_positive_fx(raw: str) -> Optional[float]:
     return float(value)
 
 
-def prompt_fx_rates(currencies: Set[str]) -> Dict[str, float]:
-    """Pide al usuario el valor de FX (-> CLP) para cada moneda distinta a CLP en
-    `currencies`. CLP no se pregunta (su FX siempre es 1, ver excel_writer.DEFAULT_FX)."""
+def prompt_fx_for_currency(label: str) -> float:
+    """Pide al usuario un único valor de FX (-> CLP) para `label`."""
+    while True:
+        raw = input(f"Tipo de cambio (FX) para {label} -> CLP: ")
+        value = _parse_positive_fx(raw)
+        if value is not None:
+            return value
+        print("Valor inválido. Ingresa un número positivo (ej. 922 o 922,50).")
+
+
+def prompt_receipt_selection(currency_code: str, candidates: List[ExpenseRow]) -> ExpenseRow:
+    """Pide al usuario que elija, por índice, la boleta de `currency_code` a usar
+    como Dato A (monto en moneda origen) del cálculo de FX real."""
+    print(f"\nSelecciona la boleta en {currency_code} para calcular su FX real:")
+    for i, row in enumerate(candidates, start=1):
+        date_str = row.date.isoformat() if row.date else "sin fecha"
+        print(f"  {i}. {row.source_file} — {row.amount} {currency_code} — {date_str}")
+    while True:
+        raw = input("Número de boleta: ").strip()
+        if raw.isdigit() and 1 <= int(raw) <= len(candidates):
+            return candidates[int(raw) - 1]
+        print(f"Ingresa un número entre 1 y {len(candidates)}.")
+
+
+def prompt_usd_charged(currency_code: str) -> float:
+    """Pide el USD que el banco cobró en la tarjeta por la boleta seleccionada
+    (Dato B del cálculo de FX real)."""
+    while True:
+        raw = input(f"USD que cobró el banco por esa compra en {currency_code}: ")
+        value = _parse_positive_fx(raw)
+        if value is not None:
+            return value
+        print("Valor inválido. Ingresa un número positivo (ej. 67.41 o 67,41).")
+
+
+def determine_fx(
+    rows_to_write: List[ExpenseRow],
+) -> tuple[Dict[str, float], List[CurrencyConversion]]:
+    """Determina el FX (-> CLP) de cada moneda no-CLP presente en `rows_to_write`.
+
+    USD se pregunta directo (es también el Dato C —TC USD->CLP del banco— del cálculo
+    de las demás monedas). El resto de las monedas no-CLP usa el FX real calculado en
+    dos pasos por `complementary_info.compute_real_fx`, a partir de una boleta elegida
+    por el usuario (Dato A) y el USD que el banco cobró por esa compra (Dato B). Si no
+    hay boletas en USD, Dato C se pregunta aparte (una sola vez, reutilizado para todas
+    las monedas que lo necesiten)."""
+    currencies_present = {row.currency for row in rows_to_write if row.currency}
     fx_rates: Dict[str, float] = {}
-    for code in sorted(c for c in currencies if c and c != "CLP"):
-        while True:
-            raw = input(f"Tipo de cambio (FX) para {code} -> CLP: ")
-            value = _parse_positive_fx(raw)
-            if value is not None:
-                fx_rates[code] = value
-                break
-            print("Valor inválido. Ingresa un número positivo (ej. 922 o 922,50).")
-    return fx_rates
+    conversions: List[CurrencyConversion] = []
+
+    if "USD" in currencies_present:
+        fx_rates["USD"] = prompt_fx_for_currency("USD")
+
+    other_currencies = sorted(c for c in currencies_present if c not in ("CLP", "USD"))
+    if other_currencies:
+        usd_to_clp = fx_rates.get("USD")
+        if usd_to_clp is None:
+            print(
+                "\nNinguna boleta está en USD; hace falta el tipo de cambio USD -> CLP "
+                "de tu banco para calcular el FX real de las demás monedas."
+            )
+            usd_to_clp = prompt_fx_for_currency("USD (según tu banco)")
+
+        for code in other_currencies:
+            candidates = [row for row in rows_to_write if row.currency == code]
+            selected = prompt_receipt_selection(code, candidates)
+            dato_b = prompt_usd_charged(code)
+            conversion = CurrencyConversion(
+                currency=code,
+                file_path=selected.file_path,
+                dato_a=float(selected.amount),
+                dato_b=dato_b,
+                dato_c=usd_to_clp,
+            )
+            fx_rates[code] = conversion.fx_step2
+            conversions.append(conversion)
+
+    return fx_rates, conversions
 
 
 def process_file(file_path: Path, config: dict) -> tuple[ExtractionResult, validate.ValidationResult]:
@@ -212,15 +282,14 @@ def run(input_dir: Path, config: dict, output_path: Path, audit_path: Path) -> N
 
     rows_to_write.sort(key=lambda r: (r.date or date_cls.max, r.source_file))
 
-    currencies_present = {row.currency for row in rows_to_write if row.currency}
-    fx_rates = prompt_fx_rates(currencies_present)
+    fx_rates, conversions = determine_fx(rows_to_write)
     for row in rows_to_write:
         row.fx = fx_rates.get(row.currency, excel_writer.DEFAULT_FX)
 
     description = prompt_report_description()
     output_path = output_path.with_name(f"Expense_Report_{description}.xlsx")
 
-    excel_writer.write_expense_report(rows_to_write, config, output_path)
+    excel_writer.write_expense_report(rows_to_write, config, output_path, conversions=conversions)
     audit_result_path = audit_writer.write_audit_report(review_cases, config, audit_path)
 
     print()

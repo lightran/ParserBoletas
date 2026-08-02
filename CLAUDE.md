@@ -85,12 +85,14 @@ Encabezado en fila 8, datos desde la fila 9: `Item | Date | Amount | Currency | 
 Amount in CLP | Expense Type | Comments`.
 
 - **FX** (el tipo de cambio a CLP — a veces referido como "columna FIX" en conversaciones
-  previas, mismo campo): CLP siempre queda en `1` (nunca se pregunta). Para cada moneda
-  distinta a CLP presente en el reporte, `main.py::run()` pregunta el FX por consola
-  **una vez por moneda** (no por boleta) después de leer todas las boletas y antes de
-  escribir el Excel — ver `main.py::prompt_fx_rates`/`_parse_positive_fx` (reutiliza
-  `currency.parse_localized_amount` para aceptar `922`, `922.50` o `922,50`; solo acepta
-  positivos, si no vuelve a preguntar). El valor se carga en `row.fx` de todas las filas
+  previas, mismo campo): CLP siempre queda en `1` (nunca se pregunta). `main.py::run()`
+  determina el FX de cada moneda no-CLP presente vía `main.py::determine_fx` **una vez
+  por moneda** (no por boleta), después de leer todas las boletas y antes de escribir el
+  Excel — ver la sección "FX real de moneda extranjera" más abajo para el detalle
+  completo. En resumen: USD se pregunta directo por consola; el resto de las monedas usa
+  un FX **real**, calculado en dos pasos a partir de una boleta elegida por el usuario y
+  el USD que le cobró el banco en la tarjeta (documentado en la pestaña "Complementary
+  info" del Excel de salida). El valor resultante se carga en `row.fx` de todas las filas
   de esa moneda antes de llamar a `excel_writer.write_expense_report`. Filas con moneda
   no determinada (`None`) quedan en `DEFAULT_FX`=1 (no hay moneda contra la cual pedir
   FX). **Amount in CLP se recalcula solo** porque se escribe como fórmula.
@@ -194,6 +196,86 @@ codificado en el prompt de `extract.py` (`used_card_voucher_total`). Si se ve qu
 modelo falla en detectar esto, revisar/ajustar ese prompt antes que tocar `currency.py`
 o `validate.py`.
 
+## FX real de moneda extranjera (pestaña "Complementary info")
+
+`src/complementary_info.py` calcula, con regla de 3 en dos pasos, el FX real de cada
+moneda extranjera (distinta de CLP y de USD) a partir del monto en USD que el banco
+cobró en la tarjeta por esa compra — reemplaza el ingreso manual de FX para esas
+monedas. Ejemplo real (boleta en soles peruanos):
+
+- Dato A = monto de la boleta en moneda origen (223.50 PEN, elegido por el usuario
+  entre las boletas de esa moneda).
+- Dato B = USD que el banco cobró por ese movimiento en la tarjeta (67.41 USD,
+  ingresado por el usuario).
+- Dato C = tipo de cambio USD → CLP del banco (922 — ver más abajo de dónde sale).
+- Paso 1: `FX(origen→USD) = Dato B / Dato A` = 0.301611.
+- Paso 2: `FX(origen→CLP) = FX(origen→USD) × Dato C` = 278.09 ≈ 278 — este es el valor
+  que se carga en `row.fx` para todas las filas de esa moneda.
+
+**USD es un caso especial**: si hay boletas en USD, su FX se sigue preguntando directo
+por consola (no tiene sentido aplicarle la regla de 3 a sí misma) — y ese mismo valor
+se reutiliza como Dato C para las demás monedas. Si el reporte no tiene ninguna boleta
+en USD pero sí otras monedas extranjeras, Dato C se pregunta aparte, **una sola vez**,
+y se reutiliza para todas (`main.py::determine_fx`).
+
+**Flujo interactivo** (`main.py::prompt_receipt_selection`/`prompt_usd_charged`, una
+vez por moneda extranjera no-USD presente, después de leer todas las boletas): se
+muestra una lista indexada de las boletas de esa moneda (archivo + monto + fecha), el
+usuario elige el índice a usar como Dato A, y después ingresa el Dato B (USD cobrado,
+valida positivo con `main._parse_positive_fx`, reintenta si no).
+
+**Escritura en el Excel**: la plantilla ya trae, en la pestaña "Complementary info",
+un ejemplo de referencia con las dos tablas de este cálculo (celdas `P23:R31` — ver
+constantes `CELL_DATO_A`/`CELL_DATO_B`/`CELL_DATO_C`/`CELL_STEP1_COPY` en
+`complementary_info.py`) y 3 imágenes: la boleta+voucher (zona derecha, la única que
+se reemplaza, por la boleta seleccionada — cargada con `audit_writer.
+load_original_image_for_embedding`, la imagen ORIGINAL sin preprocesar, mismo criterio
+que el reporte de auditoría) y dos screenshots del banco (listado de movimientos y
+tipo de cambio — la app **nunca** las toca, las actualiza el usuario a mano),
+conectadas a las tablas con flechas azules. Hay **una pestaña clonada por moneda
+extranjera** (título `"Complementary info - <MONEDA>"`, ej. "Complementary info -
+PEN"), insertada justo después de "Expense Report". **Si no hay ninguna moneda que
+necesite este cálculo** (reporte solo con CLP, o CLP+USD), la pestaña "Complementary
+info" de la plantilla se elimina del Excel de salida — no aplica.
+
+**Decimales coherentes con "Expense Report"**: la plantilla trae `R30` (resultado
+final del Paso 2, el mismo número que termina en `row.fx`) con `number_format = "0"`
+(sin decimales), mientras que la columna FX de "Expense Report" usa formato contable
+con 2 decimales — mismo valor, dos hojas, dos cantidades de decimales distintas.
+`apply_conversions()` recibe `fx_number_format` (leído en `excel_writer.py` desde
+`ws.cell(first_row, COL_FX).number_format`, la celda real de la plantilla, no
+hardcodeado) y se lo aplica a `R30` en cada pestaña clonada, para que el número se
+vea igual en las dos hojas.
+
+**Dos límites de openpyxl obligaron a un manejo especial** (mismo espíritu que el
+`<extLst>` de los dropdowns, ver "Trampas de openpyxl" abajo):
+
+- `Workbook.copy_worksheet()` **no copia imágenes ni dibujos** — por eso
+  `apply_conversions()` clona la hoja con `copy_worksheet` (preserva valores, fórmulas,
+  merges, anchos de columna — todo correctamente remapeado contra el `styles.xml` real
+  del workbook en memoria) y **reinserta las 3 imágenes a mano**, con las mismas
+  coordenadas de ancla (`TwoCellAnchor`/`AnchorMarker`) que trae la plantilla.
+- **openpyxl descarta los conectores de flecha (`<xdr:cxnSp>`) al guardar cualquier
+  hoja con dibujos** — no los modela, así que se pierden en cualquier `wb.save()`,
+  toquen o no la hoja. Se reinyectan como XML crudo después de guardar
+  (`reinject_arrows()`), extrayendo los bloques `<xdr:twoCellAnchor>` con `cxnSp` de la
+  plantilla ORIGINAL (nunca de la copia ya guardada, para no arrastrar el problema de
+  índices de estilo) y declarando `xmlns:xdr` directamente en el bloque inyectado
+  (mismo truco que el `xr:uid` del `<extLst>`, para no depender de que el `<wsDr>` raíz
+  que regenera openpyxl declare ese prefijo).
+
+**No intentar clonar la hoja copiando el XML crudo de la plantilla** (`sheet2.xml`)
+directamente en el archivo de salida: `openpyxl` **reconstruye `styles.xml` al
+guardar** (probado: no es un passthrough, cambia de tamaño y de orden de índices), así
+que los `s="..."` de celda de la plantilla original ya no apuntan a los estilos
+correctos en el archivo de salida. Por eso `apply_conversions()` clona la hoja
+mientras el workbook todavía está en memoria (vía `copy_worksheet`, antes de
+`wb.save()`), no después.
+
+Verificado end-to-end (valores, imágenes y flechas) abriendo el archivo generado con
+LibreOffice headless, con una y con dos monedas extranjeras simultáneas (cada una en
+su propia pestaña, sin pisarse).
+
 ## Formato numérico localizado
 
 `currency.py` implementa desambiguación de separador de miles/decimal agnóstica al
@@ -224,13 +306,19 @@ aparece un tipo de separador, se interpreta como decimal solo si aparece una vez
   Excel, no afectan el dropdown) o el XML queda inválido ("unbound prefix"). Verificado
   end-to-end abriendo el archivo generado con LibreOffice headless: el dropdown
   sobrevive y las fórmulas (`G9=F9*D9`, `G33=SUM(G9:G32)`) se recalculan bien.
+- **openpyxl también descarta los conectores de flecha (`<xdr:cxnSp>`) de cualquier
+  hoja con dibujos al guardar**, y `Workbook.copy_worksheet()` no copia imágenes ni
+  dibujos — ver la sección "FX real de moneda extranjera" arriba
+  (`complementary_info.py`) para el detalle completo de cómo se resuelve (clonar antes
+  de guardar + reinyectar flechas después, igual patrón que el `<extLst>` de arriba).
 
 ## Fuera de alcance en v1 (a propósito)
 
-- Conversión de divisas automática/API de tipo de cambio: el FX se pide al usuario por
-  consola (una vez por moneda), no se busca solo. No hay forma no interactiva de
-  correr el pipeline todavía (`prompt_fx_rates`/`prompt_report_description` siempre
-  usan `input()`).
+- Conversión de divisas automática vía API de tipo de cambio externa: el FX real se
+  calcula (regla de 3) a partir de datos que ingresa el usuario por consola (monto de
+  boleta elegida + USD cobrado por el banco), no se consulta un servicio de FX. No hay
+  forma no interactiva de correr el pipeline todavía (`determine_fx`/
+  `prompt_report_description` siempre usan `input()`).
 - Categorización difusa avanzada más allá de mapear a la lista fija de 22 tipos.
 - Integración con correo/buzón de gastos, UI.
 
@@ -268,13 +356,29 @@ API de openpyxl), hipervínculos del índice a cada pestaña, y que no se genera
 de FX/nombre de archivo (`tests/test_main.py`, mockeando `builtins.input` con
 `_mock_inputs()`): `sanitize_filename_component` (caracteres prohibidos, espacios
 internos/de los extremos, colapso de guiones bajos repetidos), `prompt_report_description`
-(reintenta si sanea a vacío), `prompt_fx_rates` (pregunta solo por monedas no-CLP
-presentes, nunca por CLP ni por moneda `None`, acepta punto o coma decimal, reintenta
-ante negativos/cero/no-numéricos), y un test de integración de `run()` que confirma que
-el FX ingresado queda cargado en las filas de esa moneda mientras CLP queda en 1 y
-Amount in CLP sigue siendo fórmula. Los tests de integración existentes de `run()`
-también tuvieron que empezar a mockear `builtins.input` (antes no lo necesitaban) porque
-ahora `run()` siempre pide la descripción del reporte. `src/api_key.py`
+(reintenta si sanea a vacío), `prompt_fx_for_currency` (acepta punto o coma decimal,
+reintenta ante negativos/cero/no-numéricos), `prompt_receipt_selection` (devuelve la
+boleta en el índice elegido, reintenta ante índice fuera de rango o no numérico),
+`prompt_usd_charged` (mismo criterio de validación que `prompt_fx_for_currency`), y
+`determine_fx` (vacío si solo hay CLP o moneda `None` sin preguntar nada; USD se
+pregunta directo sin pasar por selección de boleta; una moneda no-USD con USD presente
+reutiliza el FX de USD como Dato C; sin boleta en USD se pregunta Dato C aparte; dos
+monedas no-USD reutilizan el mismo Dato C sin volver a preguntarlo), y un test de
+integración de `run()` que confirma que el FX ingresado queda cargado en las filas de
+esa moneda mientras CLP queda en 1 y Amount in CLP sigue siendo fórmula. Los tests de
+integración existentes de `run()` también tuvieron que empezar a mockear
+`builtins.input` (antes no lo necesitaban) porque ahora `run()` siempre pide la
+descripción del reporte; y `complementary_info.py` (`tests/test_complementary_info.py`,
+usando una boleta real de `boletas/` y la plantilla real, vía
+`excel_writer.write_expense_report(..., conversions=...)`): `compute_real_fx` contra el
+ejemplo de referencia (223.50 PEN / 67.41 USD / TC 922 → 278.09), que sin conversiones
+la pestaña "Complementary info" se elimina, que con una conversión se crea
+"Complementary info - <MONEDA>" justo después de "Expense Report" con las celdas
+`P24`/`Q24`/`Q30`/`P31` correctas y las fórmulas de la plantilla (`R24`, `R30`) intactas,
+que la imagen embebida es la boleta seleccionada (3 imágenes en la pestaña, no la de
+ejemplo de la plantilla), que las flechas conectoras sobreviven la reinyección (`cxnSp`
+presente en el XML del drawing final), y que dos monedas extranjeras simultáneas crean
+dos pestañas independientes sin pisarse. `src/api_key.py`
 (`tests/test_api_key.py`, mockeando `getpass.getpass`): prioridad de la variable de
 entorno sobre el archivo, que no pregunta si el archivo ya tiene token válido, que
 pregunta y guarda cuando no hay nada, reintento ante input vacío, token en blanco en el

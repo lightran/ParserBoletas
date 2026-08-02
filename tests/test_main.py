@@ -10,6 +10,8 @@ import main
 import preprocess
 from audit_writer import INDEX_SHEET_NAME
 from extract import ExtractionResult
+from complementary_info import CurrencyConversion
+from excel_writer import ExpenseRow
 from main import (
     REVIEW_COMMENTS_SUFFIX,
     _build_expense_row,
@@ -17,8 +19,11 @@ from main import (
     _format_date_like_excel,
     build_comments,
     build_review_comments,
-    prompt_fx_rates,
+    determine_fx,
+    prompt_fx_for_currency,
+    prompt_receipt_selection,
     prompt_report_description,
+    prompt_usd_charged,
     sanitize_filename_component,
 )
 from validate import ValidationResult
@@ -109,9 +114,10 @@ def test_run_prints_execution_summary_with_accumulated_usage(tmp_path, monkeypat
 
     monkeypatch.setattr(preprocess, "preprocess_file", fake_preprocess_file)
     monkeypatch.setattr(main, "extract_receipt", fake_extract_receipt)
-    # Ambas boletas son PEN (no-CLP): se pregunta FX una vez para PEN, luego la
-    # descripción del reporte.
-    _mock_inputs(monkeypatch, ["700", "resumen-test"])
+    # Ambas boletas son PEN (no-CLP, no-USD): no hay boleta en USD así que se
+    # pregunta el TC USD->CLP aparte, luego la boleta a usar (índice), el USD
+    # cobrado por el banco, y por último la descripción del reporte.
+    _mock_inputs(monkeypatch, ["922", "1", "50", "resumen-test"])
 
     config = {
         "excel": {
@@ -229,8 +235,9 @@ def test_run_writes_review_rows_with_amount_and_keeps_review_marking(tmp_path, m
 
     monkeypatch.setattr(main, "process_file", fake_process_file)
     # Solo ok.jpg queda con moneda determinada (PEN); review_with_amount.jpg tiene
-    # currency=None así que no se pregunta FX para ella. Luego la descripción.
-    _mock_inputs(monkeypatch, ["700", "casos-revision"])
+    # currency=None así que no se pregunta FX para ella. PEN no-USD: TC USD->CLP
+    # aparte, índice de boleta (única candidata), USD cobrado, y la descripción.
+    _mock_inputs(monkeypatch, ["922", "1", "50", "casos-revision"])
 
     output_path = tmp_path / "out.xlsx"
     audit_path = tmp_path / "auditoria.xlsx"
@@ -308,28 +315,7 @@ def test_prompt_report_description_reprompts_when_sanitized_result_is_empty(monk
     assert "vacía" in capsys.readouterr().out.lower()
 
 
-# --- prompt_fx_rates ---
-
-
-def test_prompt_fx_rates_asks_only_for_non_clp_currencies(monkeypatch):
-    # Orden alfabético: PEN antes que USD. CLP nunca debe pedirse.
-    _mock_inputs(monkeypatch, ["278", "922"])
-    result = prompt_fx_rates({"CLP", "USD", "PEN"})
-    assert result == {"PEN": 278.0, "USD": 922.0}
-
-
-def test_prompt_fx_rates_returns_empty_dict_when_only_clp_present(monkeypatch):
-    def _fail_if_called(prompt=""):
-        raise AssertionError("no debería pedir FX si la única moneda es CLP")
-
-    monkeypatch.setattr("builtins.input", _fail_if_called)
-    assert prompt_fx_rates({"CLP"}) == {}
-
-
-def test_prompt_fx_rates_ignores_none_currency():
-    # None (moneda no determinada) no debe intentar pedirse FX para ella.
-    result = prompt_fx_rates({"CLP", None})
-    assert result == {}
+# --- prompt_fx_for_currency ---
 
 
 @pytest.mark.parametrize(
@@ -340,17 +326,145 @@ def test_prompt_fx_rates_ignores_none_currency():
         ("922,50", 922.5),
     ],
 )
-def test_prompt_fx_rates_accepts_dot_or_comma_decimal_separator(monkeypatch, raw, expected):
+def test_prompt_fx_for_currency_accepts_dot_or_comma_decimal_separator(monkeypatch, raw, expected):
     _mock_inputs(monkeypatch, [raw])
-    assert prompt_fx_rates({"USD"}) == {"USD": expected}
+    assert prompt_fx_for_currency("USD") == expected
 
 
-def test_prompt_fx_rates_reprompts_on_invalid_input(monkeypatch, capsys):
+def test_prompt_fx_for_currency_reprompts_on_invalid_input(monkeypatch, capsys):
     # No numérico, cero y negativo son inválidos; recién "922,50" es válido.
     _mock_inputs(monkeypatch, ["abc", "0", "-5", "922,50"])
-    result = prompt_fx_rates({"USD"})
-    assert result == {"USD": 922.5}
+    assert prompt_fx_for_currency("USD") == 922.5
     assert "inválido" in capsys.readouterr().out.lower()
+
+
+# --- prompt_receipt_selection ---
+
+
+def _make_row(source_file, amount, currency="PEN", date_value=None, file_path=None):
+    return ExpenseRow(
+        date=date_value,
+        amount=amount,
+        currency=currency,
+        expense_type="Taxi",
+        source_file=source_file,
+        file_path=file_path or Path(source_file),
+    )
+
+
+def test_prompt_receipt_selection_returns_row_at_chosen_index(monkeypatch):
+    candidates = [_make_row("a.jpg", 100.0), _make_row("b.jpg", 200.0)]
+    _mock_inputs(monkeypatch, ["2"])
+    assert prompt_receipt_selection("PEN", candidates) is candidates[1]
+
+
+def test_prompt_receipt_selection_reprompts_on_out_of_range_or_non_numeric(monkeypatch, capsys):
+    candidates = [_make_row("a.jpg", 100.0)]
+    _mock_inputs(monkeypatch, ["abc", "0", "2", "1"])
+    assert prompt_receipt_selection("PEN", candidates) is candidates[0]
+    assert "1" in capsys.readouterr().out
+
+
+# --- prompt_usd_charged ---
+
+
+def test_prompt_usd_charged_accepts_positive_number(monkeypatch):
+    _mock_inputs(monkeypatch, ["67.41"])
+    assert prompt_usd_charged("PEN") == 67.41
+
+
+def test_prompt_usd_charged_reprompts_on_invalid_input(monkeypatch, capsys):
+    _mock_inputs(monkeypatch, ["abc", "-1", "67,41"])
+    assert prompt_usd_charged("PEN") == 67.41
+    assert "inválido" in capsys.readouterr().out.lower()
+
+
+# --- determine_fx ---
+
+
+def test_determine_fx_returns_empty_when_only_clp_present(monkeypatch):
+    def _fail_if_called(prompt=""):
+        raise AssertionError("no debería pedir nada si la única moneda es CLP")
+
+    monkeypatch.setattr("builtins.input", _fail_if_called)
+    rows = [_make_row("a.jpg", 33200.0, currency="CLP")]
+    fx_rates, conversions = determine_fx(rows)
+    assert fx_rates == {}
+    assert conversions == []
+
+
+def test_determine_fx_ignores_none_currency(monkeypatch):
+    def _fail_if_called(prompt=""):
+        raise AssertionError("no debería pedir nada para moneda no determinada")
+
+    monkeypatch.setattr("builtins.input", _fail_if_called)
+    rows = [_make_row("a.jpg", 100.0, currency=None)]
+    fx_rates, conversions = determine_fx(rows)
+    assert fx_rates == {}
+    assert conversions == []
+
+
+def test_determine_fx_asks_usd_directly_no_real_fx_calc(monkeypatch):
+    # Reporte solo con USD: se pregunta directo, sin pasar por selección de boleta.
+    rows = [_make_row("a.jpg", 990.0, currency="USD")]
+    _mock_inputs(monkeypatch, ["922"])
+    fx_rates, conversions = determine_fx(rows)
+    assert fx_rates == {"USD": 922.0}
+    assert conversions == []
+
+
+def test_determine_fx_computes_real_fx_for_non_usd_currency_reusing_usd_rate(monkeypatch):
+    # Caso del enunciado: boleta PEN 223.50, USD cobrado 67.41, USD presente con FX 922.
+    rows = [
+        _make_row("usd.jpg", 990.0, currency="USD"),
+        _make_row("pen.jpg", 223.50, currency="PEN", file_path=Path("boletas/pen.jpg")),
+    ]
+    # FX de USD, luego índice de boleta PEN (única candidata), luego USD cobrado.
+    _mock_inputs(monkeypatch, ["922", "1", "67.41"])
+
+    fx_rates, conversions = determine_fx(rows)
+
+    assert fx_rates["USD"] == 922.0
+    assert fx_rates["PEN"] == pytest.approx(278.09, abs=0.01)
+    assert len(conversions) == 1
+    conv = conversions[0]
+    assert conv.currency == "PEN"
+    assert conv.file_path == Path("boletas/pen.jpg")
+    assert conv.dato_a == 223.50
+    assert conv.dato_b == 67.41
+    assert conv.dato_c == 922.0
+    assert conv.fx_step1 == pytest.approx(0.301611, abs=1e-5)
+    assert conv.fx_step2 == pytest.approx(278.09, abs=0.01)
+
+
+def test_determine_fx_asks_usd_to_clp_separately_when_no_usd_boleta(monkeypatch, capsys):
+    # Ninguna boleta en USD: el TC USD->CLP se pregunta aparte, una sola vez.
+    rows = [_make_row("pen.jpg", 223.50, currency="PEN")]
+    _mock_inputs(monkeypatch, ["922", "1", "67.41"])
+
+    fx_rates, conversions = determine_fx(rows)
+
+    assert "USD" not in fx_rates
+    assert fx_rates["PEN"] == pytest.approx(278.09, abs=0.01)
+    assert conversions[0].dato_c == 922.0
+    assert "usd" in capsys.readouterr().out.lower()
+
+
+def test_determine_fx_reuses_single_usd_to_clp_rate_across_multiple_currencies(monkeypatch):
+    # PEN y BRL, sin USD presente: se pregunta el TC USD->CLP UNA sola vez y se
+    # reutiliza para ambas conversiones (no se pregunta dos veces).
+    rows = [
+        _make_row("pen.jpg", 223.50, currency="PEN"),
+        _make_row("brl.jpg", 100.0, currency="BRL"),
+    ]
+    # TC USD->CLP, boleta BRL (índice), USD cobrado BRL, boleta PEN (índice), USD cobrado PEN.
+    # BRL va antes que PEN alfabéticamente.
+    _mock_inputs(monkeypatch, ["922", "1", "20", "1", "67.41"])
+
+    fx_rates, conversions = determine_fx(rows)
+
+    assert {c.currency for c in conversions} == {"PEN", "BRL"}
+    assert all(c.dato_c == 922.0 for c in conversions)
 
 
 # --- run(): el FX pedido por consola se carga en cada fila según su moneda ---

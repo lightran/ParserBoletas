@@ -53,11 +53,12 @@ def sanitize_sheet_name(raw_name: str, existing_names) -> str:
         suffix_n += 1
 
 
-def _load_original_image_for_embedding(
+def load_original_image_for_embedding(
     file_path: Path, pdf_render_dpi: int, max_width_px: int
 ) -> Optional[PILImage.Image]:
     """Carga la imagen ORIGINAL (sin preprocesar) de la boleta, rasterizando PDFs,
-    y la reescala a `max_width_px` de ancho manteniendo proporción."""
+    y la reescala a `max_width_px` de ancho manteniendo proporción. Reutilizada por
+    complementary_info.py para embeber la boleta seleccionada en "Complementary info"."""
     try:
         pages = preprocess.load_pages(file_path, pdf_render_dpi)
     except Exception:
@@ -92,7 +93,7 @@ def _add_review_sheet(wb, file_path: Path, result: ExtractionResult, validation:
     ws.column_dimensions["B"].width = 50
 
     pdf_render_dpi = config.get("preprocess", {}).get("pdf_render_dpi", 300)
-    image = _load_original_image_for_embedding(file_path, pdf_render_dpi, MAX_IMAGE_WIDTH_PX)
+    image = load_original_image_for_embedding(file_path, pdf_render_dpi, MAX_IMAGE_WIDTH_PX)
     image_row = len(fields) + 2
     if image is not None:
         buffer = BytesIO()
