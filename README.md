@@ -160,10 +160,11 @@ Con esos tres datos calcula, en dos pasos: `moneda origen → USD` (USD cobrado 
 la boleta) y luego `→ CLP` (multiplicando por el tipo de cambio USD → CLP). Ese
 resultado es el FX que se usa en el reporte para esa moneda — **y queda documentado**,
 paso a paso, en una pestaña `Complementary info - <MONEDA>` del Excel de salida (una por
-cada moneda extranjera), junto con la foto de la boleta elegida. Si tu banco cobra el
-movimiento en tarjeta directamente en la moneda de origen o el proceso no aplica a tu
-caso, podés editar el FX a mano en el Excel después — la columna Amount in CLP se
-recalcula sola.
+cada moneda extranjera), junto con la foto de la boleta elegida, **con la misma
+cantidad de decimales que la columna FX de "Expense Report"** (2 decimales), para que
+el mismo número se vea igual en las dos hojas. Si tu banco cobra el movimiento en
+tarjeta directamente en la moneda de origen o el proceso no aplica a tu caso, podés
+editar el FX a mano en el Excel después — la columna Amount in CLP se recalcula sola.
 
 Si el reporte no tiene ninguna moneda que necesite este cálculo (todo CLP, o CLP+USD),
 la pestaña "Complementary info" no aparece en el Excel de salida.
@@ -441,8 +442,10 @@ cálculo de FX real contra el ejemplo de referencia (223.50 PEN / 67.41 USD / TC
 278.09), que la pestaña "Complementary info" se elimina cuando no hay monedas que la
 necesiten, que se crea una pestaña "Complementary info - <MONEDA>" por cada moneda
 extranjera con las tablas y fórmulas correctas, que la imagen embebida es la boleta
-elegida (no el ejemplo de la plantilla), que las flechas conectoras sobreviven, y que
-dos monedas simultáneas generan pestañas independientes; la resolución de la API key
+elegida (no el ejemplo de la plantilla), que las flechas conectoras sobreviven, que el
+resultado final del FX real queda con la misma cantidad de decimales que la columna FX
+de "Expense Report" (no el formato sin decimales que trae la plantilla), y que dos
+monedas simultáneas generan pestañas independientes; la resolución de la API key
 (`tests/test_api_key.py`, mockeando
 `getpass.getpass`): la variable de entorno tiene prioridad sobre el archivo, no
 pregunta si el archivo ya tiene un token válido, pregunta y guarda cuando no hay nada,
