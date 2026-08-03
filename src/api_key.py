@@ -64,6 +64,28 @@ def _prompt_for_token() -> str:
         print("La API key no puede quedar vacía. Intenta de nuevo.")
 
 
+def has_saved_key(secrets_path: Path = DEFAULT_SECRETS_PATH) -> bool:
+    """True si ya hay una API key utilizable (env var o archivo de secretos), sin
+    pedirla ni bloquear. Usado por la interfaz web para decidir si mostrar el campo
+    de token en el formulario."""
+    env_value = os.environ.get(ENV_VAR_NAME)
+    if env_value and env_value.strip():
+        return True
+    return _read_token_from_file(Path(secrets_path)) is not None
+
+
+def save_api_key(token: str, secrets_path: Path = DEFAULT_SECRETS_PATH) -> None:
+    """Guarda `token` en el archivo de secretos y lo deja seteado en el proceso.
+    Mismo criterio de persistencia que `resolve_api_key` (texto plano, chmod 600
+    best-effort, archivo gitignoreado) — pensado para la interfaz web, donde el
+    token llega como campo de formulario en vez de por `getpass`."""
+    token = token.strip()
+    if not token:
+        raise ValueError("La API key no puede quedar vacía.")
+    _write_token_to_file(Path(secrets_path), token)
+    os.environ[ENV_VAR_NAME] = token
+
+
 def resolve_api_key(secrets_path: Path = DEFAULT_SECRETS_PATH) -> str:
     """Devuelve la API key a usar y deja ANTHROPIC_API_KEY seteada en el proceso
     (para que extract.py la lea sin cambios). Si tuvo que pedirla por consola,

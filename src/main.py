@@ -17,10 +17,11 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from dataclasses import dataclass
 from datetime import date as date_cls
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional
 
 import yaml
 
@@ -192,6 +193,23 @@ def prompt_usd_charged(currency_code: str) -> float:
         print("Valor inválido. Ingresa un número positivo (ej. 67.41 o 67,41).")
 
 
+@dataclass
+class FxRequirements:
+    """Qué monedas no-CLP presentes en `rows_to_write` necesitan qué tipo de dato de
+    FX. Extraído de `determine_fx` para que la capa web pueda mostrar los mismos
+    campos dinámicos que hoy pide la CLI por consola, sin duplicar la detección."""
+
+    has_usd: bool
+    conversion_currencies: List[str]  # no-CLP, no-USD: necesitan el cálculo de FX real
+
+
+def detect_fx_requirements(rows_to_write: List[ExpenseRow]) -> FxRequirements:
+    currencies_present = {row.currency for row in rows_to_write if row.currency}
+    has_usd = "USD" in currencies_present
+    other_currencies = sorted(c for c in currencies_present if c not in ("CLP", "USD"))
+    return FxRequirements(has_usd=has_usd, conversion_currencies=other_currencies)
+
+
 def determine_fx(
     rows_to_write: List[ExpenseRow],
 ) -> tuple[Dict[str, float], List[CurrencyConversion]]:
@@ -203,15 +221,14 @@ def determine_fx(
     por el usuario (Dato A) y el USD que el banco cobró por esa compra (Dato B). Si no
     hay boletas en USD, Dato C se pregunta aparte (una sola vez, reutilizado para todas
     las monedas que lo necesiten)."""
-    currencies_present = {row.currency for row in rows_to_write if row.currency}
+    requirements = detect_fx_requirements(rows_to_write)
     fx_rates: Dict[str, float] = {}
     conversions: List[CurrencyConversion] = []
 
-    if "USD" in currencies_present:
+    if requirements.has_usd:
         fx_rates["USD"] = prompt_fx_for_currency("USD")
 
-    other_currencies = sorted(c for c in currencies_present if c not in ("CLP", "USD"))
-    if other_currencies:
+    if requirements.conversion_currencies:
         usd_to_clp = fx_rates.get("USD")
         if usd_to_clp is None:
             print(
@@ -220,7 +237,7 @@ def determine_fx(
             )
             usd_to_clp = prompt_fx_for_currency("USD (según tu banco)")
 
-        for code in other_currencies:
+        for code in requirements.conversion_currencies:
             candidates = [row for row in rows_to_write if row.currency == code]
             selected = prompt_receipt_selection(code, candidates)
             dato_b = prompt_usd_charged(code)
@@ -253,21 +270,33 @@ def process_file(file_path: Path, config: dict) -> tuple[ExtractionResult, valid
     return result, validation
 
 
-def run(input_dir: Path, config: dict, output_path: Path, audit_path: Path) -> None:
-    files = sorted(
-        p for p in input_dir.iterdir() if p.suffix.lower() in SUPPORTED_SUFFIXES
-    )
-    if not files:
-        print(f"No se encontraron boletas soportadas en {input_dir}")
-        return
+@dataclass
+class ProcessingSummary:
+    """Resultado de correr `process_file` sobre un conjunto de boletas: filas listas
+    para escribir, casos para revisión y uso de tokens acumulado. Compartido entre la
+    CLI (`run`) y la capa web (que corre el mismo paso vía una llamada HTTP propia,
+    antes de pedir los datos de FX)."""
 
+    rows_to_write: List[ExpenseRow]
+    review_cases: List[audit_writer.ReviewCase]
+    total_usage: cost.TokenUsage
+    n_ok: int
+    n_total: int
+
+
+def process_all(
+    files: List[Path],
+    config: dict,
+    on_progress: Optional[Callable[[Path], None]] = None,
+) -> ProcessingSummary:
     rows_to_write: List[ExpenseRow] = []
     review_cases: List[audit_writer.ReviewCase] = []
     total_usage = cost.TokenUsage()
     n_ok = 0
 
     for file_path in files:
-        print(f"Procesando {file_path.name}...")
+        if on_progress is not None:
+            on_progress(file_path)
         result, validation = process_file(file_path, config)
         total_usage.add(result.usage)
 
@@ -281,16 +310,76 @@ def run(input_dir: Path, config: dict, output_path: Path, audit_path: Path) -> N
             rows_to_write.append(row)
 
     rows_to_write.sort(key=lambda r: (r.date or date_cls.max, r.source_file))
+    return ProcessingSummary(
+        rows_to_write=rows_to_write,
+        review_cases=review_cases,
+        total_usage=total_usage,
+        n_ok=n_ok,
+        n_total=len(files),
+    )
 
-    fx_rates, conversions = determine_fx(rows_to_write)
-    for row in rows_to_write:
+
+def compute_missing_requirements(
+    *,
+    n_files: int,
+    parsed: bool,
+    description: str,
+    requirements: Optional[FxRequirements],
+    usd_fx: Optional[float],
+    submitted_conversion_currencies: Iterable[str],
+) -> List[str]:
+    """Requisitos que todavía faltan para poder generar la rendición desde la
+    interfaz web (lista vacía == listo). Función pura, sin I/O, para poder testear
+    la regla de habilitación del botón "Crear rendición" sin levantar el servidor."""
+    missing: List[str] = []
+
+    if n_files == 0:
+        missing.append("Carga al menos una boleta.")
+    if not parsed:
+        missing.append("Las boletas cargadas todavía no se procesaron.")
+    if not sanitize_filename_component(description or ""):
+        missing.append("Ingresa una descripción para el nombre del archivo.")
+
+    if requirements is not None:
+        needs_usd_fx = requirements.has_usd or bool(requirements.conversion_currencies)
+        if needs_usd_fx and not usd_fx:
+            missing.append("Ingresa el tipo de cambio de USD -> CLP.")
+
+        submitted = set(submitted_conversion_currencies)
+        pending = [c for c in requirements.conversion_currencies if c not in submitted]
+        if pending:
+            missing.append(
+                "Completa la boleta y el USD cobrado para: " + ", ".join(pending)
+            )
+
+    return missing
+
+
+def run(input_dir: Path, config: dict, output_path: Path, audit_path: Path) -> None:
+    files = sorted(
+        p for p in input_dir.iterdir() if p.suffix.lower() in SUPPORTED_SUFFIXES
+    )
+    if not files:
+        print(f"No se encontraron boletas soportadas en {input_dir}")
+        return
+
+    summary = process_all(
+        files, config, on_progress=lambda fp: print(f"Procesando {fp.name}...")
+    )
+
+    fx_rates, conversions = determine_fx(summary.rows_to_write)
+    for row in summary.rows_to_write:
         row.fx = fx_rates.get(row.currency, excel_writer.DEFAULT_FX)
 
     description = prompt_report_description()
     output_path = output_path.with_name(f"Expense_Report_{description}.xlsx")
 
-    excel_writer.write_expense_report(rows_to_write, config, output_path, conversions=conversions)
-    audit_result_path = audit_writer.write_audit_report(review_cases, config, audit_path)
+    excel_writer.write_expense_report(
+        summary.rows_to_write, config, output_path, conversions=conversions
+    )
+    audit_result_path = audit_writer.write_audit_report(
+        summary.review_cases, config, audit_path
+    )
 
     print()
     print(f"Excel de rendición: {output_path}")
@@ -298,9 +387,12 @@ def run(input_dir: Path, config: dict, output_path: Path, audit_path: Path) -> N
         print(f"Reporte de auditoría: {audit_result_path}")
     else:
         print("Reporte de auditoría: sin casos para revisión, no se generó archivo")
-    print(f"Resumen: {n_ok} OK, {len(review_cases)} para revisión, {len(files)} total")
+    print(
+        f"Resumen: {summary.n_ok} OK, {len(summary.review_cases)} para revisión, "
+        f"{summary.n_total} total"
+    )
     print()
-    print(cost.format_summary(len(files), total_usage, config.get("pricing", {})))
+    print(cost.format_summary(summary.n_total, summary.total_usage, config.get("pricing", {})))
 
 
 def _ensure_utf8_console() -> None:

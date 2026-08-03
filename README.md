@@ -9,6 +9,7 @@ rendición de gastos con el formato de
 
 - [Configuración del entorno](#configuración-del-entorno)
 - [Ejecución](#ejecución)
+- [Interfaz web](#interfaz-web)
 - [Mecánica de funcionamiento](#mecánica-de-funcionamiento)
 - [Esquema del Excel de salida](#esquema-del-excel-de-salida)
 - [Reporte de auditoría](#reporte-de-auditoría)
@@ -208,6 +209,46 @@ de validación de montos, las listas fijas de monedas/categorías, y los precios
 millón de tokens usados para estimar el costo (`pricing`) viven en `config.yaml`.
 Editar ese archivo (o pasar `--config otro.yaml`) para calibrar sin tocar Python.
 
+## Interfaz web
+
+Alternativa a la CLI: la misma lógica de negocio (extracción, columnas, auditoría,
+cálculo de FX, resumen de costos — nada de eso cambia), pero interactuando por una
+página local en el navegador en vez de por consola.
+
+```bash
+python app.py
+```
+
+Un solo comando, un solo proceso (FastAPI + uvicorn sirviendo la página y corriendo
+el pipeline, sin frontend separado ni build de Node): levanta el servidor en
+`http://127.0.0.1:8000` y abre el navegador ahí automáticamente. `Ctrl+C` para
+detenerlo. Puertos/host configurables con las variables de entorno
+`PARSERBOLETAS_PORT` / `PARSERBOLETAS_HOST` si el 8000 ya está en uso. Correr desde la
+raíz del repo, igual que la CLI (las rutas de `config.yaml` son relativas al directorio
+de trabajo).
+
+Flujo en la página:
+
+1. **API key de Anthropic**: si no hay una guardada (ni en `secrets.yaml` ni en
+   `ANTHROPIC_API_KEY`), la página pide un campo tipo password y la guarda con el mismo
+   criterio que la CLI (texto plano en `secrets.yaml`, gitignoreado).
+2. **Cargar boletas**: arrastrar y soltar (o elegir archivos) jpg/png/pdf. Se puede
+   quitar un archivo de la lista antes de procesar.
+3. **Descripción del reporte** (para el nombre del archivo de salida) y botón
+   **"Procesar boletas"** — corre la extracción sobre lo cargado y detecta qué monedas
+   no-CLP aparecen.
+4. **Tipo de cambio**: recién ahí aparecen los campos que dependen de lo detectado — el
+   USD → CLP si hace falta, y por cada moneda extranjera que necesita el cálculo de FX
+   real (ver "FX real de moneda extranjera" arriba), un selector para elegir la boleta
+   de referencia y un campo para el USD que cobró el banco. Reemplaza la selección por
+   índice de consola.
+5. **"Crear rendición"**: deshabilitado hasta que todo lo anterior esté completo. Al
+   generar, ofrece la descarga del Excel de rendición y (si hubo casos) el de
+   auditoría, y muestra el mismo resumen de tokens/costo que imprime la CLI.
+
+No reemplaza la CLI — `python src/main.py boletas/ ...` sigue funcionando igual, para
+scripting o CI.
+
 ## Mecánica de funcionamiento
 
 `src/main.py` orquesta un pipeline lineal, archivo por archivo:
@@ -379,6 +420,7 @@ queda en FX=1 por no haber moneda contra la cual calcular nada.
 
 ```
 ParserBoletas/
+  app.py              # entrypoint único de la interfaz web (python app.py)
   boletas/            # imágenes/PDFs de boletas a procesar
   plantilla/          # Excel de rendición de ejemplo (formato de referencia)
   src/
@@ -391,7 +433,12 @@ ParserBoletas/
     audit_writer.py   # reporte de auditoría .xlsx (pestaña por boleta a revisar + imagen)
     cost.py           # acumulación de tokens + estimación de costo de la corrida
     api_key.py        # resuelve/guarda la API key (env var > secrets.yaml > prompt)
-    main.py           # orquesta el pipeline sobre una carpeta
+    main.py           # orquesta el pipeline sobre una carpeta (CLI) + helpers compartidos con la web
+    web/
+      routes.py       # endpoints FastAPI — fachada sobre la misma lógica de main.py
+      state.py        # sesiones ("jobs") en memoria: boletas subidas + resultados intermedios
+      templates/index.html  # página única (Tailwind CDN + Alpine.js, sin build de Node)
+      static/         # app.css, app.js
   tests/              # pytest, con casos armados a partir de boletas reales
   config.yaml         # parámetros calibrables (nunca secretos)
   secrets.yaml        # API key en texto plano — generado localmente, en .gitignore
@@ -418,11 +465,11 @@ acumulación de tokens y el cálculo de costo estimado (suma entre llamadas, fó
 costo, formato del resumen), incluyendo un test que corre `main.run()` con la llamada a
 la API mockeada y confirma que el resumen se imprime al final con el total acumulado; y
 qué filas se escriben en el Excel (`main.py::_build_expense_row`): boleta para revisión
-con monto determinado → se escribe con Comments = "Boleta para revisión, mirar
-auditoría"; boleta OK → mantiene el formato de nombre de archivo + fecha; boleta para
-revisión sin monto → no se escribe (sin cambios); más un test de integración con tres
-boletas que confirma que `auditoria.xlsx` tiene pestaña para las dos boletas REVIEW
-(no para la OK). `audit_writer.py` (`tests/test_audit_writer.py`, usando boletas reales
+con monto determinado → se escribe con Comments = nombre de archivo sin extensión +
+" (Marcada para Revision)"; boleta OK → mantiene el nombre de archivo sin extensión;
+boleta para revisión sin monto → no se escribe (sin cambios); más un test de
+integración con tres boletas que confirma que `auditoria.xlsx` tiene pestaña para las
+dos boletas REVIEW (no para la OK). `audit_writer.py` (`tests/test_audit_writer.py`, usando boletas reales
 de `boletas/` — una jpeg y un PDF, para probar el rasterizado) tiene su propia
 cobertura: saneo/truncado/deduplicado de nombres de pestaña, contenido de cada pestaña
 (motivo + valores extraídos), que la imagen efectivamente quede embebida (verificado
@@ -454,14 +501,27 @@ ausente, y el archivo queda en UTF-8 con la advertencia de texto plano; y la
 compatibilidad con consola Windows (`_ensure_utf8_console` en `tests/test_main.py`):
 reconfigura stdout/stderr a UTF-8, tolera streams que no exponen `reconfigure()`, y un
 test que reproduce el `UnicodeEncodeError` real contra un stream `cp1252` y confirma
-que la reconfiguración lo evita. No hacen llamadas a la API de Claude (la llamada de
-red está aislada y mockeada), así que corren sin necesidad de `ANTHROPIC_API_KEY`.
+que la reconfiguración lo evita; el guardado del token para la interfaz web
+(`has_saved_key`/`save_api_key` en `tests/test_api_key.py`, sin `getpass`); y la capa
+web (`tests/test_web.py`, vía `fastapi.testclient.TestClient`, con `main.process_file`
+mockeado igual que en `test_main.py`): sube/rechaza extensiones no soportadas, quitar
+un archivo antes de parsear, detección de monedas y candidatos por moneda tras
+`/parse`, la regla de habilitación de "Crear rendición" (`/validate`) antes y después de
+completar los campos de FX, que `/generate` rechace con 400 si faltan requisitos, que
+el Excel descargado no tenga pestaña "Complementary info" con solo CLP y sí tenga
+"Complementary info - PEN" con el FX real correcto cuando corresponde, y que una boleta
+para revisión deje disponible la descarga de `auditoria.xlsx`. No hacen llamadas a la
+API de Claude (la llamada de red está aislada y mockeada), así que corren sin necesidad
+de `ANTHROPIC_API_KEY`.
 
 ## Fuera de alcance en v1
 
 - Conversión de divisas automática vía un servicio externo de tipo de cambio: el FX real
-  se calcula a partir de datos que ingresa el usuario por consola (boleta elegida + USD
-  cobrado por el banco), no se consulta ningún servicio — no hay modo no interactivo/
-  batch todavía.
+  se calcula a partir de datos que ingresa el usuario (boleta elegida + USD cobrado por
+  el banco), no se consulta ningún servicio.
+- No hay modo no interactivo/batch: tanto la CLI como la interfaz web piden estos datos
+  (por consola o por formulario) en cada corrida.
 - Categorización difusa avanzada más allá de mapear a la lista fija de 23 tipos de gasto.
-- Integración con correo/buzón de gastos, interfaz gráfica.
+- Integración con correo/buzón de gastos.
+- Multi-usuario / despliegue remoto: la interfaz web es para un solo usuario local (el
+  estado de cada sesión vive en memoria del proceso, no hay autenticación).

@@ -14,12 +14,16 @@ from complementary_info import CurrencyConversion
 from excel_writer import ExpenseRow
 from main import (
     REVIEW_COMMENTS_SUFFIX,
+    FxRequirements,
     _build_expense_row,
     _ensure_utf8_console,
     _format_date_like_excel,
     build_comments,
     build_review_comments,
+    compute_missing_requirements,
+    detect_fx_requirements,
     determine_fx,
+    process_all,
     prompt_fx_for_currency,
     prompt_receipt_selection,
     prompt_report_description,
@@ -465,6 +469,137 @@ def test_determine_fx_reuses_single_usd_to_clp_rate_across_multiple_currencies(m
 
     assert {c.currency for c in conversions} == {"PEN", "BRL"}
     assert all(c.dato_c == 922.0 for c in conversions)
+
+
+# --- detect_fx_requirements: detección de monedas, extraída de determine_fx para
+# que la capa web pueda mostrar los mismos campos dinámicos sin pasar por consola ---
+
+
+def test_detect_fx_requirements_empty_when_only_clp():
+    rows = [_make_row("a.jpg", 33200.0, currency="CLP")]
+    req = detect_fx_requirements(rows)
+    assert req == FxRequirements(has_usd=False, conversion_currencies=[])
+
+
+def test_detect_fx_requirements_ignores_none_currency():
+    rows = [_make_row("a.jpg", 100.0, currency=None)]
+    req = detect_fx_requirements(rows)
+    assert req == FxRequirements(has_usd=False, conversion_currencies=[])
+
+
+def test_detect_fx_requirements_flags_usd_and_sorts_other_currencies():
+    rows = [
+        _make_row("usd.jpg", 990.0, currency="USD"),
+        _make_row("brl.jpg", 100.0, currency="BRL"),
+        _make_row("pen.jpg", 223.50, currency="PEN"),
+    ]
+    req = detect_fx_requirements(rows)
+    assert req.has_usd is True
+    assert req.conversion_currencies == ["BRL", "PEN"]
+
+
+# --- compute_missing_requirements: regla pura de habilitación del botón "Crear
+# rendición" en la interfaz web ---
+
+
+def test_compute_missing_requirements_empty_when_everything_present():
+    req = FxRequirements(has_usd=False, conversion_currencies=[])
+    missing = compute_missing_requirements(
+        n_files=1,
+        parsed=True,
+        description="viaje-lima",
+        requirements=req,
+        usd_fx=None,
+        submitted_conversion_currencies=[],
+    )
+    assert missing == []
+
+
+def test_compute_missing_requirements_flags_no_files_not_parsed_and_blank_description():
+    missing = compute_missing_requirements(
+        n_files=0,
+        parsed=False,
+        description="   ",
+        requirements=None,
+        usd_fx=None,
+        submitted_conversion_currencies=[],
+    )
+    assert len(missing) == 3
+
+
+def test_compute_missing_requirements_requires_usd_fx_when_needed():
+    req = FxRequirements(has_usd=True, conversion_currencies=[])
+    missing = compute_missing_requirements(
+        n_files=1,
+        parsed=True,
+        description="viaje-lima",
+        requirements=req,
+        usd_fx=None,
+        submitted_conversion_currencies=[],
+    )
+    assert any("USD" in m for m in missing)
+
+
+def test_compute_missing_requirements_requires_pending_conversion_currencies():
+    req = FxRequirements(has_usd=False, conversion_currencies=["PEN", "BRL"])
+    missing = compute_missing_requirements(
+        n_files=1,
+        parsed=True,
+        description="viaje-lima",
+        requirements=req,
+        usd_fx=922.0,
+        submitted_conversion_currencies=["PEN"],
+    )
+    assert len(missing) == 1
+    assert "BRL" in missing[0]
+    assert "PEN" not in missing[0]
+
+
+def test_compute_missing_requirements_ready_once_all_conversions_submitted():
+    req = FxRequirements(has_usd=False, conversion_currencies=["PEN", "BRL"])
+    missing = compute_missing_requirements(
+        n_files=1,
+        parsed=True,
+        description="viaje-lima",
+        requirements=req,
+        usd_fx=922.0,
+        submitted_conversion_currencies=["PEN", "BRL"],
+    )
+    assert missing == []
+
+
+# --- process_all: comparte la extracción de main.run() con la capa web ---
+
+
+def test_process_all_builds_summary_and_sorts_rows(tmp_path, monkeypatch):
+    (tmp_path / "b.jpg").write_bytes(b"fake")
+    (tmp_path / "a.jpg").write_bytes(b"fake")
+
+    results_by_file = {
+        "a.jpg": _make_ok_result(date="2026-06-10"),
+        "b.jpg": _make_ok_result(date="2026-06-05"),
+    }
+
+    def fake_process_file(file_path, config):
+        result = results_by_file[file_path.name]
+        validation = main.validate.validate_extraction(result, BASE_CONFIG)
+        return result, validation
+
+    monkeypatch.setattr(main, "process_file", fake_process_file)
+
+    progressed = []
+    summary = process_all(
+        [tmp_path / "b.jpg", tmp_path / "a.jpg"],
+        BASE_CONFIG,
+        on_progress=lambda fp: progressed.append(fp.name),
+    )
+
+    assert summary.n_total == 2
+    assert summary.n_ok == 2
+    assert summary.review_cases == []
+    # Ordenadas por fecha, no por el orden en que se pasaron los archivos.
+    assert [r.source_file for r in summary.rows_to_write] == ["b.jpg", "a.jpg"]
+    assert progressed == ["b.jpg", "a.jpg"]
 
 
 # --- run(): el FX pedido por consola se carga en cada fila según su moneda ---

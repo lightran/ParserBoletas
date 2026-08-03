@@ -96,3 +96,55 @@ def test_resolve_api_key_accepts_pathlib_path_in_nested_directory(tmp_path, monk
 
     assert result == "nested-token"
     assert secrets_path.exists()
+
+
+# --- has_saved_key / save_api_key: usados por la interfaz web (sin getpass) ---
+
+
+def test_has_saved_key_true_from_env_var(monkeypatch, tmp_path):
+    monkeypatch.setenv(api_key.ENV_VAR_NAME, "env-token")
+    assert api_key.has_saved_key(tmp_path / "secrets.yaml") is True
+
+
+def test_has_saved_key_true_from_file(monkeypatch, tmp_path):
+    monkeypatch.delenv(api_key.ENV_VAR_NAME, raising=False)
+    secrets_path = tmp_path / "secrets.yaml"
+    secrets_path.write_text("anthropic_api_key: saved-token\n", encoding="utf-8")
+    assert api_key.has_saved_key(secrets_path) is True
+
+
+def test_has_saved_key_false_when_absent(monkeypatch, tmp_path):
+    monkeypatch.delenv(api_key.ENV_VAR_NAME, raising=False)
+    assert api_key.has_saved_key(tmp_path / "secrets.yaml") is False
+
+
+def test_has_saved_key_false_when_file_has_blank_token(monkeypatch, tmp_path):
+    monkeypatch.delenv(api_key.ENV_VAR_NAME, raising=False)
+    secrets_path = tmp_path / "secrets.yaml"
+    secrets_path.write_text("anthropic_api_key: ''\n", encoding="utf-8")
+    assert api_key.has_saved_key(secrets_path) is False
+
+
+def test_save_api_key_writes_file_and_sets_env(monkeypatch, tmp_path):
+    monkeypatch.delenv(api_key.ENV_VAR_NAME, raising=False)
+    secrets_path = tmp_path / "secrets.yaml"
+
+    api_key.save_api_key("web-token", secrets_path)
+
+    assert os.environ[api_key.ENV_VAR_NAME] == "web-token"
+    saved = yaml.safe_load(secrets_path.read_text(encoding="utf-8"))
+    assert saved["anthropic_api_key"] == "web-token"
+    assert api_key.has_saved_key(secrets_path) is True
+
+
+def test_save_api_key_rejects_blank_token(monkeypatch, tmp_path):
+    monkeypatch.delenv(api_key.ENV_VAR_NAME, raising=False)
+    secrets_path = tmp_path / "secrets.yaml"
+
+    try:
+        api_key.save_api_key("   ", secrets_path)
+        assert False, "debería levantar ValueError con token en blanco"
+    except ValueError:
+        pass
+
+    assert not secrets_path.exists()

@@ -1,11 +1,14 @@
 # ParserBoletas
 
-Pipeline de línea de comandos que lee boletas/facturas de gastos de viaje (jpg/png/pdf),
-extrae los campos relevantes usando el modelo de visión de Claude, y escribe una fila
-por boleta en un Excel de rendición de gastos con el formato exacto de
-`plantilla/Form - Chile Expense Report - Peru Travel Junio 2026.xlsx`.
+Pipeline que lee boletas/facturas de gastos de viaje (jpg/png/pdf), extrae los campos
+relevantes usando el modelo de visión de Claude, y escribe una fila por boleta en un
+Excel de rendición de gastos con el formato exacto de
+`plantilla/Form - Chile Expense Report - Peru Travel Junio 2026.xlsx`. Dos interfaces
+sobre el mismo pipeline de negocio: una CLI (`src/main.py`, interactiva por consola) y
+una interfaz web local (`app.py` + `src/web/`, ver sección "Interfaz web" más abajo) —
+ninguna reescribe extracción/columnas/auditoría/cálculos, son capas de interfaz.
 
-## Cómo correrlo
+## Cómo correrlo (CLI)
 
 ```bash
 python src/main.py boletas/ --output output/Expense_Report.xlsx --audit output/auditoria.xlsx
@@ -16,9 +19,11 @@ pide por consola la primera vez y la guarda en `secrets.yaml` (ver sección "API
 Anthropic" abajo). Parámetros por defecto en `config.yaml` (`--config` para usar otro
 archivo).
 
-**Es interactivo**: después de leer todas las boletas, pide por consola el FX de cada
+**Es interactiva**: después de leer todas las boletas, pide por consola el FX de cada
 moneda no-CLP y una descripción del reporte (ver sección de FX arriba y "Nombre del
-archivo de salida" más abajo) — no hay modo no interactivo/batch todavía.
+archivo de salida" más abajo) — no hay modo no interactivo/batch todavía. La interfaz
+web (`python app.py`) pide los mismos datos, pero como campos de formulario en vez de
+prompts de consola — ver "Interfaz web" abajo.
 
 ### Nombre del archivo de salida
 
@@ -50,6 +55,84 @@ plano** (única forma simple de persistirla localmente) — el archivo lleva un 
 de advertencia explícito, y se intenta `os.chmod(path, 0o600)` best-effort (en un
 `try/except OSError`, porque en Windows los bits POSIX no aplican igual y no debe
 romper la corrida).
+
+Para la interfaz web (que no puede usar `getpass`, no tiene consola), se agregaron dos
+funciones **aditivas** que delegan en las mismas privadas de siempre — no cambian el
+comportamiento de `resolve_api_key`:
+
+- `has_saved_key(secrets_path)`: `True` si ya hay key utilizable (env var o archivo),
+  sin pedirla ni bloquear — usado para decidir si mostrar el campo de token en la
+  página.
+- `save_api_key(token, secrets_path)`: guarda `token` con el mismo criterio de
+  persistencia (texto plano, chmod 600 best-effort) y lo deja seteado en el proceso.
+  Levanta `ValueError` si `token` es blanco.
+
+## Interfaz web (`app.py`, `src/web/`)
+
+Capa de interfaz alternativa a la CLI — mismo pipeline, sin reescribir extracción,
+columnas, auditoría ni cálculos. Arquitectura, según lo acordado con el usuario antes
+de implementar:
+
+- **Monolito, un solo proceso**: `python app.py` levanta FastAPI + uvicorn sirviendo la
+  página y corriendo el pipeline en el mismo proceso (sin microservicios, sin frontend
+  Node/React separado). `app.py` abre el navegador solo (`webbrowser.open`, vía
+  `threading.Timer`, biblioteca estándar — funciona igual en Windows/Linux) apuntando a
+  `http://127.0.0.1:8000` (host/puerto configurables con `PARSERBOLETAS_HOST` /
+  `PARSERBOLETAS_PORT`). La CLI (`src/main.py`) sigue funcionando sin cambios.
+- **UI**: página única `src/web/templates/index.html`, Tailwind vía CDN + Alpine.js vía
+  CDN (sin build de Node) para la reactividad (mostrar/ocultar campos, habilitar el
+  botón). Estilo sidebar oscura + cards inspirado en un dashboard Hitachi de
+  referencia, con el rojo Hitachi (`#8C1D40`, definido en `templates/index.html` vía
+  `tailwind.config`) como único color de acento.
+- **Reuso de lógica**: `src/web/routes.py` es una fachada delgada sobre las mismas
+  funciones que usa la CLI — `main.process_all` (extracción + validación por boleta),
+  `main.detect_fx_requirements` (qué monedas necesitan qué dato de FX),
+  `complementary_info.CurrencyConversion`/`compute_real_fx`, `excel_writer.
+  write_expense_report`, `audit_writer.write_audit_report`, `cost.format_summary`. No
+  hay una segunda implementación de ninguna de estas reglas.
+- **`main.py` se partió en piezas reusables** (sin cambiar el comportamiento de `run()`,
+  cubierto por los mismos tests de siempre):
+  - `main.process_all(files, config, on_progress=None) -> ProcessingSummary`: el loop
+    de `process_file` + armado de filas + orden, que antes vivía inline en `run()`.
+    `run()` (CLI) y `POST /api/jobs/{id}/parse` (web) llaman a la misma función.
+  - `main.detect_fx_requirements(rows) -> FxRequirements`: la detección de qué monedas
+    presentes necesitan FX (extraída de `determine_fx`, que la sigue usando
+    internamente). La web la usa para decidir qué campos de FX mostrar, sin pasar por
+    `input()`.
+  - `main.compute_missing_requirements(...) -> List[str]`: función pura (sin I/O) con
+    la regla de habilitación del botón "Crear rendición" — boletas cargadas, parseo
+    hecho, descripción saneable no vacía, FX de USD si hace falta, selección completa
+    por cada moneda que necesita el cálculo de FX real. La usan tanto
+    `POST /api/jobs/{id}/validate` (el botón consulta esto en cada cambio relevante del
+    formulario) como `POST /api/jobs/{id}/generate` (rechaza con 400 si falta algo) —
+    la regla vive una sola vez, en Python, testeada sin levantar el servidor.
+- **Estado por sesión (`src/web/state.py::JobStore`)**: como el flujo web está partido
+  en varias llamadas HTTP (subir → parsear → generar) en vez de una corrida bloqueante
+  de consola, cada "job" (uuid4, sin autenticación — herramienta local de un solo
+  usuario) guarda en memoria del proceso las boletas subidas (en un directorio temporal
+  propio) y los resultados intermedios (`ProcessingSummary`, `FxRequirements`, rutas de
+  los Excel generados). No hay persistencia entre reinicios del proceso ni entre
+  procesos — se borra al apagar el servidor (`JobStore.close()` en el `lifespan` de
+  FastAPI).
+- **Flujo por etapas** (dependencia real: las monedas y candidatos para el FX real solo
+  se conocen después de parsear):
+  1. `POST /api/jobs` crea la sesión.
+  2. `POST /api/jobs/{id}/receipts` (multipart) sube boletas; rechaza extensiones fuera
+     de `main.SUPPORTED_SUFFIXES`.
+  3. `POST /api/jobs/{id}/parse` corre `process_all` + `detect_fx_requirements`;
+     devuelve monedas detectadas, candidatos por moneda (para el selector de boleta de
+     conversión) y el uso de tokens acumulado hasta ahí.
+  4. `POST /api/jobs/{id}/validate` (llamado por el JS en cada cambio relevante del
+     formulario) devuelve si ya se puede generar.
+  5. `POST /api/jobs/{id}/generate` arma `fx_rates`/`conversions` a partir de lo
+     enviado (mismo `CurrencyConversion` que la CLI, sin pasar por consola), llama a
+     `excel_writer.write_expense_report`/`audit_writer.write_audit_report`, y devuelve
+     las URLs de descarga (`GET /api/jobs/{id}/download/{report|audit}`) más el mismo
+     resumen de costo que imprime la CLI (`cost.format_summary`, texto idéntico).
+- **Token en contexto web**: `GET /api/config-status` chequea `api_key.has_saved_key`
+  para que la página decida si mostrar el campo password; `POST /api/config/api-key`
+  llama a `api_key.save_api_key` (mismo criterio de persistencia que la CLI, ver
+  sección anterior).
 
 ## Compatibilidad con Windows
 
@@ -315,12 +398,16 @@ aparece un tipo de separador, se interpreta como decimal solo si aparece una vez
 ## Fuera de alcance en v1 (a propósito)
 
 - Conversión de divisas automática vía API de tipo de cambio externa: el FX real se
-  calcula (regla de 3) a partir de datos que ingresa el usuario por consola (monto de
-  boleta elegida + USD cobrado por el banco), no se consulta un servicio de FX. No hay
-  forma no interactiva de correr el pipeline todavía (`determine_fx`/
-  `prompt_report_description` siempre usan `input()`).
+  calcula (regla de 3) a partir de datos que ingresa el usuario (monto de boleta
+  elegida + USD cobrado por el banco), no se consulta un servicio de FX.
+- Modo no interactivo/batch: tanto la CLI (`determine_fx`/`prompt_report_description`,
+  siempre usan `input()`) como la interfaz web (siempre pide estos datos por
+  formulario) requieren que alguien complete estos pasos en cada corrida.
 - Categorización difusa avanzada más allá de mapear a la lista fija de 22 tipos.
-- Integración con correo/buzón de gastos, UI.
+- Integración con correo/buzón de gastos.
+- Multi-usuario o despliegue remoto de la interfaz web: `JobStore` guarda el estado de
+  cada sesión en memoria del proceso, sin autenticación — pensada para un solo usuario
+  corriendo `app.py` en su propia máquina.
 
 ## Tests
 
@@ -390,3 +477,25 @@ un stream `cp1252` y confirma que la reconfiguración lo evita. No hacen llamada
 API de Claude — `extract.py` aísla la llamada de red en `_call_vision_api` para poder
 mockearla; la extracción real por visión no se ha probado en este entorno por falta de
 `ANTHROPIC_API_KEY`.
+
+Los helpers nuevos que comparten la CLI y la interfaz web tienen su propia cobertura
+pura en `tests/test_main.py` (sin FastAPI): `process_all` arma el mismo
+`ProcessingSummary` que antes armaba `run()` inline (filas ordenadas, casos para
+revisión, uso acumulado), `detect_fx_requirements` detecta USD/monedas de conversión
+igual que hacía `determine_fx` antes de pedir nada por consola, y
+`compute_missing_requirements` cubre cada requisito de la regla de habilitación del
+botón "Crear rendición" (sin boletas, sin parsear, descripción vacía/no saneable, falta
+FX de USD, monedas de conversión pendientes) de forma aislada. `api_key.has_saved_key`/
+`save_api_key` (`tests/test_api_key.py`, sin `getpass`) cubren el reemplazo del flujo de
+consola para la web: detecta key por env var o archivo sin pedirla, guarda y setea el
+proceso, rechaza token en blanco. Y `tests/test_web.py`
+(`fastapi.testclient.TestClient`, con `main.process_file` mockeado igual que en
+`test_main.py`, sin pegarle a la API de Claude): sirve la página, sube boletas y
+rechaza extensiones no soportadas, permite quitar una boleta antes de parsear,
+`/parse` detecta monedas y arma los candidatos por moneda para el selector de
+conversión, `/validate` refleja la misma regla de `compute_missing_requirements` antes
+y después de completar los campos, `/generate` rechaza con 400 si falta algo y si no
+genera los archivos descargables correctos — incluyendo que la pestaña "Complementary
+info" se elimine con solo CLP y se cree "Complementary info - PEN" con el FX real
+correcto cuando hay una conversión, y que una boleta para revisión deje
+`auditoria.xlsx` disponible para descargar.

@@ -7,3 +7,4 @@ output/
 
 # Archivo de secretos local con la API key de Anthropic (texto plano, ver src/api_key.py).
 secrets.yaml
+git s
