@@ -24,6 +24,10 @@ if str(SRC_DIR) not in sys.path:
 import main  # noqa: E402
 
 
+def _initial_progress() -> dict:
+    return {"status": "idle", "total": 0, "done": 0, "current_file": None, "error": None}
+
+
 @dataclass
 class Job:
     id: str
@@ -34,6 +38,10 @@ class Job:
     requirements: Optional["main.FxRequirements"] = None
     report_path: Optional[Path] = None
     audit_path: Optional[Path] = None
+    # Avance del paso de parseo, corrido en un hilo de fondo para que la página
+    # pueda hacer polling del progreso ("status" en idle | running | done | error).
+    progress: dict = field(default_factory=_initial_progress)
+    parse_payload: Optional[dict] = None
 
 
 class JobStore:

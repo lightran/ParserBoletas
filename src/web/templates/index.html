@@ -80,11 +80,14 @@
         ></div>
 
         <!-- API key -->
-        <section x-show="hasApiKey === false" x-cloak class="mb-6 rounded-xl border border-gray-200 p-5">
+        <section x-show="hasApiKey === false || changingApiKey" x-cloak class="mb-6 rounded-xl border border-gray-200 p-5">
           <h2 class="mb-1 text-sm font-semibold text-gray-900">API key de Anthropic</h2>
-          <p class="mb-3 text-sm text-gray-500">
+          <p class="mb-3 text-sm text-gray-500" x-show="hasApiKey === false">
             No se encontró una key guardada. Se guarda localmente en <code class="text-xs">secrets.yaml</code>
             (nunca se sube a git).
+          </p>
+          <p class="mb-3 text-sm text-gray-500" x-show="hasApiKey === true" x-cloak>
+            Vas a reemplazar la key guardada en <code class="text-xs">secrets.yaml</code>.
           </p>
           <div class="flex gap-2">
             <input
@@ -100,8 +103,22 @@
             >
               Guardar
             </button>
+            <button
+              x-show="hasApiKey === true"
+              x-cloak
+              @click="changingApiKey = false; apiKeyInput = ''"
+              class="rounded-lg px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700"
+            >
+              Cancelar
+            </button>
           </div>
         </section>
+
+        <div x-show="hasApiKey === true && !changingApiKey" x-cloak class="mb-6 -mt-4">
+          <button @click="changingApiKey = true" class="text-xs font-medium text-gray-400 hover:text-hitachi">
+            Cambiar API key
+          </button>
+        </div>
 
         <!-- Boletas -->
         <section class="mb-6 rounded-xl border border-gray-200 p-5">
@@ -161,6 +178,19 @@
             <span x-show="!parsing">Procesar boletas</span>
             <span x-show="parsing" x-cloak>Procesando…</span>
           </button>
+
+          <div x-show="parsing" x-cloak class="mt-4">
+            <div class="mb-1.5 flex items-center justify-between text-xs text-gray-500">
+              <span class="truncate pr-4" x-text="parseProgress.current_file ? ('Procesando ' + parseProgress.current_file + '…') : 'Procesando…'"></span>
+              <span class="shrink-0 font-medium text-gray-700" x-text="parseProgress.done + '/' + parseProgress.total + ' boletas procesadas'"></span>
+            </div>
+            <div class="h-2 w-full overflow-hidden rounded-full bg-gray-100">
+              <div
+                class="h-full rounded-full bg-hitachi transition-all duration-300 ease-out"
+                :style="'width: ' + (parseProgress.total ? Math.round((parseProgress.done / parseProgress.total) * 100) : 0) + '%'"
+              ></div>
+            </div>
+          </div>
         </section>
 
         <!-- Resultado del parseo -->

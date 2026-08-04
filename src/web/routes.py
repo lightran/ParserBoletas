@@ -19,7 +19,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -154,8 +154,7 @@ async def upload_receipts(job_id: str, files: List[UploadFile] = File(...)):
 
     job.files.sort()
     # Un nuevo upload invalida el parseo anterior (hay boletas nuevas sin procesar).
-    job.summary = None
-    job.requirements = None
+    _reset_parse_state(job)
 
     return {"files": [p.name for p in job.files], "rejected": rejected}
 
@@ -166,13 +165,70 @@ def remove_receipt(job_id: str, filename: str):
     target = job.upload_dir / filename
     job.files = [p for p in job.files if p.name != filename]
     target.unlink(missing_ok=True)
-    job.summary = None
-    job.requirements = None
+    _reset_parse_state(job)
     return {"files": [p.name for p in job.files]}
 
 
+def _reset_parse_state(job: Job) -> None:
+    job.summary = None
+    job.requirements = None
+    job.parse_payload = None
+    job.progress = {"status": "idle", "total": 0, "done": 0, "current_file": None, "error": None}
+
+
+def _run_parse(job: Job, config: dict) -> None:
+    """Corre en un hilo de fondo (agendado por BackgroundTasks) para que la página
+    pueda hacer polling del avance vía GET .../parse/status en vez de bloquearse
+    esperando la respuesta de una sola llamada larga."""
+    counter = {"done": 0}
+
+    def on_progress(file_path: Path) -> None:
+        # `main.process_all` llama a este hook ANTES de procesar cada archivo: al
+        # dispararse para el archivo N, los N-1 anteriores ya terminaron.
+        job.progress["current_file"] = file_path.name
+        job.progress["done"] = counter["done"]
+        counter["done"] += 1
+
+    try:
+        summary = main.process_all(job.files, config, on_progress=on_progress)
+        requirements = main.detect_fx_requirements(summary.rows_to_write)
+        job.summary = summary
+        job.requirements = requirements
+
+        candidates_by_currency: Dict[str, list] = {
+            code: [
+                {
+                    "filename": row.source_file,
+                    "amount": float(row.amount),
+                    "date": row.date.isoformat() if row.date else None,
+                }
+                for row in summary.rows_to_write
+                if row.currency == code
+            ]
+            for code in requirements.conversion_currencies
+        }
+        job.parse_payload = {
+            "n_total": summary.n_total,
+            "n_ok": summary.n_ok,
+            "n_review": len(summary.review_cases),
+            "needs_usd_fx": requirements.has_usd or bool(requirements.conversion_currencies),
+            "conversion_currencies": requirements.conversion_currencies,
+            "candidates_by_currency": candidates_by_currency,
+            "usage": _usage_payload(summary.n_total, summary.total_usage, config),
+        }
+        job.progress["done"] = job.progress["total"]
+        job.progress["current_file"] = None
+        job.progress["status"] = "done"
+    except Exception as exc:
+        # Un hilo de fondo que revienta sin capturar no tiene forma de avisarle al
+        # cliente (la respuesta HTTP de POST /parse ya se mandó) — se guarda acá
+        # para que el polling lo muestre, en vez de perderse en el log del server.
+        job.progress["status"] = "error"
+        job.progress["error"] = str(exc)
+
+
 @app.post("/api/jobs/{job_id}/parse")
-def parse_job(job_id: str):
+def parse_job(job_id: str, background_tasks: BackgroundTasks):
     job = _get_job(job_id)
     if not job.files:
         raise HTTPException(status_code=400, detail="No hay boletas cargadas.")
@@ -180,37 +236,26 @@ def parse_job(job_id: str):
         raise HTTPException(
             status_code=400, detail="Falta configurar la API key de Anthropic."
         )
+    if job.progress["status"] == "running":
+        raise HTTPException(status_code=409, detail="Ya hay un procesamiento en curso.")
     api_key.resolve_api_key(SECRETS_PATH)  # deja ANTHROPIC_API_KEY seteada en el proceso
 
     config = _config()
-    summary = main.process_all(job.files, config)
-    requirements = main.detect_fx_requirements(summary.rows_to_write)
+    _reset_parse_state(job)
+    job.progress["status"] = "running"
+    job.progress["total"] = len(job.files)
 
-    job.summary = summary
-    job.requirements = requirements
+    background_tasks.add_task(_run_parse, job, config)
+    return {"status": "started", "total": len(job.files)}
 
-    candidates_by_currency: Dict[str, list] = {
-        code: [
-            {
-                "filename": row.source_file,
-                "amount": float(row.amount),
-                "date": row.date.isoformat() if row.date else None,
-            }
-            for row in summary.rows_to_write
-            if row.currency == code
-        ]
-        for code in requirements.conversion_currencies
-    }
 
-    return {
-        "n_total": summary.n_total,
-        "n_ok": summary.n_ok,
-        "n_review": len(summary.review_cases),
-        "needs_usd_fx": requirements.has_usd or bool(requirements.conversion_currencies),
-        "conversion_currencies": requirements.conversion_currencies,
-        "candidates_by_currency": candidates_by_currency,
-        "usage": _usage_payload(summary.n_total, summary.total_usage, config),
-    }
+@app.get("/api/jobs/{job_id}/parse/status")
+def parse_status(job_id: str):
+    job = _get_job(job_id)
+    payload = dict(job.progress)
+    if job.progress["status"] == "done" and job.parse_payload:
+        payload.update(job.parse_payload)
+    return payload
 
 
 def _missing_requirements(job: Job, payload: GenerateRequest) -> List[str]:

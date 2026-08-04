@@ -4,6 +4,7 @@ function expenseApp() {
     hasApiKey: null,
     apiKeyInput: "",
     savingApiKey: false,
+    changingApiKey: false,
 
     files: [],
     dragOver: false,
@@ -11,6 +12,7 @@ function expenseApp() {
     description: "",
 
     parsing: false,
+    parseProgress: { status: "idle", total: 0, done: 0, current_file: null },
     parsed: false,
     parseResult: null,
     usdFx: null,
@@ -41,8 +43,24 @@ function expenseApp() {
         const job = await jobRes.json();
         this.jobId = job.job_id;
       } catch (e) {
-        this.error = "No se pudo inicializar la sesión. Recarga la página.";
+        this.error = this._friendlyError(e, "No se pudo inicializar la sesión.");
       }
+    },
+
+    // fetch() rechaza con un TypeError genérico ("Failed to fetch" / "NetworkError")
+    // cuando la petición nunca llega a tener respuesta — típicamente porque el
+    // servidor local (la terminal con "python app.py") ya no está corriendo. Se
+    // distingue de un error de negocio (esos sí tienen respuesta HTTP con detail)
+    // para poder mostrar un mensaje accionable en vez del texto crudo del navegador.
+    _friendlyError(e, contextMessage) {
+      if (e instanceof TypeError) {
+        return (
+          (contextMessage ? contextMessage + " " : "") +
+          "No se pudo conectar con el servidor local. Verifica que la terminal " +
+          'donde corriste "python app.py" siga abierta y sin errores, y recarga la página.'
+        );
+      }
+      return e.message;
     },
 
     currentStep() {
@@ -69,8 +87,9 @@ function expenseApp() {
         if (!res.ok) throw new Error((await res.json()).detail || "Error guardando la key.");
         this.hasApiKey = true;
         this.apiKeyInput = "";
+        this.changingApiKey = false;
       } catch (e) {
-        this.error = e.message;
+        this.error = this._friendlyError(e);
       } finally {
         this.savingApiKey = false;
       }
@@ -108,7 +127,7 @@ function expenseApp() {
         }
         this.checkReady();
       } catch (e) {
-        this.error = e.message;
+        this.error = this._friendlyError(e);
       }
     },
 
@@ -126,7 +145,7 @@ function expenseApp() {
         this.generateResult = null;
         this.checkReady();
       } catch (e) {
-        this.error = "No se pudo quitar el archivo.";
+        this.error = this._friendlyError(e, "No se pudo quitar el archivo.");
       }
     },
 
@@ -134,26 +153,57 @@ function expenseApp() {
       if (!this.jobId || !this.files.length) return;
       this.parsing = true;
       this.error = null;
+      this.parseProgress = { status: "running", total: this.files.length, done: 0, current_file: null };
       try {
         const res = await fetch(`/api/jobs/${this.jobId}/parse`, { method: "POST" });
         if (!res.ok) throw new Error((await res.json()).detail || "Error procesando boletas.");
-        this.parseResult = await res.json();
-        this.parsed = true;
-
-        this.conversionSelections = {};
-        for (const code of this.parseResult.conversion_currencies) {
-          const candidates = this.parseResult.candidates_by_currency[code] || [];
-          this.conversionSelections[code] = {
-            filename: candidates.length ? candidates[0].filename : "",
-            usd_charged: null,
-          };
-        }
-        this.usdFx = null;
-        await this.checkReady();
+        await this._pollParseStatus();
       } catch (e) {
-        this.error = e.message;
-      } finally {
+        this.error = this._friendlyError(e);
         this.parsing = false;
+      }
+    },
+
+    // El parseo corre en un hilo de fondo del servidor; se consulta el avance cada
+    // 500ms hasta que termine ("done") o falle ("error"), en vez de bloquear la
+    // página esperando una sola respuesta larga.
+    async _pollParseStatus() {
+      while (true) {
+        let data;
+        try {
+          const res = await fetch(`/api/jobs/${this.jobId}/parse/status`);
+          data = await res.json();
+        } catch (e) {
+          this.error = this._friendlyError(e);
+          this.parsing = false;
+          return;
+        }
+        this.parseProgress = data;
+
+        if (data.status === "done") {
+          this.parseResult = data;
+          this.parsed = true;
+          this.conversionSelections = {};
+          for (const code of data.conversion_currencies) {
+            const candidates = data.candidates_by_currency[code] || [];
+            this.conversionSelections[code] = {
+              filename: candidates.length ? candidates[0].filename : "",
+              usd_charged: null,
+            };
+          }
+          this.usdFx = null;
+          this.parsing = false;
+          await this.checkReady();
+          return;
+        }
+
+        if (data.status === "error") {
+          this.error = "Error procesando boletas: " + (data.error || "error desconocido.");
+          this.parsing = false;
+          return;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 500));
       }
     },
 
@@ -208,7 +258,7 @@ function expenseApp() {
         if (!res.ok) throw new Error((await res.json()).detail || "Error generando la rendición.");
         this.generateResult = await res.json();
       } catch (e) {
-        this.error = e.message;
+        this.error = this._friendlyError(e);
       } finally {
         this.generating = false;
       }

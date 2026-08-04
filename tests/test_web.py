@@ -8,6 +8,7 @@ tiene su propia cobertura en los demás archivos de test.
 """
 
 import io
+import time
 
 import openpyxl
 import pytest
@@ -66,6 +67,25 @@ def _mock_results(monkeypatch, results_by_file, config=None):
         return result, validation
 
     monkeypatch.setattr(main, "process_file", fake_process_file)
+
+
+def _parse_and_wait(client, job_id, timeout=5.0):
+    """POSTea /parse (dispara el procesamiento en un hilo de fondo) y hace polling
+    de /parse/status hasta que termine. TestClient corre los BackgroundTasks antes
+    de devolver el POST, así que normalmente resuelve en la primera consulta —
+    el loop es solo para no depender de ese detalle de implementación."""
+    post_res = client.post(f"/api/jobs/{job_id}/parse")
+    if post_res.status_code != 200:
+        return post_res
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status_res = client.get(f"/api/jobs/{job_id}/parse/status")
+        data = status_res.json()
+        if data["status"] in ("done", "error"):
+            return status_res
+        time.sleep(0.05)
+    raise TimeoutError("El parseo no terminó a tiempo en el test.")
 
 
 # --- página y config ---------------------------------------------------------
@@ -147,6 +167,41 @@ def test_parse_requires_api_key(client):
     assert "API key" in r.json()["detail"]
 
 
+def test_parse_returns_started_immediately_and_reports_progress(client, monkeypatch):
+    # POST /parse no bloquea esperando el resultado: arranca el trabajo en un hilo
+    # de fondo y responde de inmediato con el total a procesar.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "env-token")
+    job_id = _create_job(client)
+    _upload(client, job_id, ["clp.jpg", "pen.jpg"])
+    _mock_results(
+        monkeypatch,
+        {
+            "clp.jpg": _make_ok_result(currency="CLP", amount=33200.0),
+            "pen.jpg": _make_ok_result(currency="PEN", amount=223.50),
+        },
+    )
+
+    r = client.post(f"/api/jobs/{job_id}/parse")
+    assert r.status_code == 200
+    assert r.json() == {"status": "started", "total": 2}
+
+    status = client.get(f"/api/jobs/{job_id}/parse/status").json()
+    assert status["status"] == "done"
+    assert status["done"] == 2
+    assert status["total"] == 2
+    assert status["current_file"] is None
+
+
+def test_parse_rejects_second_call_while_running(client, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "env-token")
+    job_id = _create_job(client)
+    _upload(client, job_id, ["a.jpg"])
+    routes.store.get(job_id).progress["status"] = "running"
+
+    r = client.post(f"/api/jobs/{job_id}/parse")
+    assert r.status_code == 409
+
+
 def test_parse_detects_currencies_and_candidates(client, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "env-token")
     job_id = _create_job(client)
@@ -160,10 +215,11 @@ def test_parse_detects_currencies_and_candidates(client, monkeypatch):
         },
     )
 
-    r = client.post(f"/api/jobs/{job_id}/parse")
+    r = _parse_and_wait(client, job_id)
     assert r.status_code == 200
     data = r.json()
 
+    assert data["status"] == "done"
     assert data["n_total"] == 2
     assert data["n_ok"] == 2
     assert data["n_review"] == 0
@@ -181,10 +237,24 @@ def test_parse_with_only_clp_needs_no_fx(client, monkeypatch):
     _upload(client, job_id, ["clp.jpg"])
     _mock_results(monkeypatch, {"clp.jpg": _make_ok_result(currency="CLP", amount=33200.0)})
 
-    r = client.post(f"/api/jobs/{job_id}/parse")
-    data = r.json()
+    data = _parse_and_wait(client, job_id).json()
     assert data["needs_usd_fx"] is False
     assert data["conversion_currencies"] == []
+
+
+def test_parse_error_is_reported_via_status(client, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "env-token")
+    job_id = _create_job(client)
+    _upload(client, job_id, ["boom.jpg"])
+
+    def fake_process_file(file_path, _config):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(main, "process_file", fake_process_file)
+
+    data = _parse_and_wait(client, job_id).json()
+    assert data["status"] == "error"
+    assert "boom" in data["error"]
 
 
 # --- validate (regla de habilitación del botón) --------------------------------
@@ -203,7 +273,7 @@ def test_validate_ready_once_description_and_conversions_present(client, monkeyp
     job_id = _create_job(client)
     _upload(client, job_id, ["pen.jpg"])
     _mock_results(monkeypatch, {"pen.jpg": _make_ok_result(currency="PEN", amount=223.50)})
-    client.post(f"/api/jobs/{job_id}/parse")
+    _parse_and_wait(client, job_id)
 
     r = client.post(
         f"/api/jobs/{job_id}/validate",
@@ -230,7 +300,7 @@ def test_generate_rejects_when_requirements_missing(client, monkeypatch):
     job_id = _create_job(client)
     _upload(client, job_id, ["clp.jpg"])
     _mock_results(monkeypatch, {"clp.jpg": _make_ok_result(currency="CLP", amount=33200.0)})
-    client.post(f"/api/jobs/{job_id}/parse")
+    _parse_and_wait(client, job_id)
 
     r = client.post(f"/api/jobs/{job_id}/generate", json={"description": ""})
     assert r.status_code == 400
@@ -241,7 +311,7 @@ def test_generate_clp_only_removes_complementary_info_tab_and_offers_downloads(c
     job_id = _create_job(client)
     _upload(client, job_id, ["clp.jpg"])
     _mock_results(monkeypatch, {"clp.jpg": _make_ok_result(currency="CLP", amount=33200.0)})
-    client.post(f"/api/jobs/{job_id}/parse")
+    _parse_and_wait(client, job_id)
 
     r = client.post(f"/api/jobs/{job_id}/generate", json={"description": "viaje CLP"})
     assert r.status_code == 200
@@ -264,7 +334,7 @@ def test_generate_with_conversion_currency_creates_complementary_info_tab(client
     job_id = _create_job(client)
     _upload(client, job_id, ["pen.jpg"])
     _mock_results(monkeypatch, {"pen.jpg": _make_ok_result(currency="PEN", amount=223.50)})
-    client.post(f"/api/jobs/{job_id}/parse")
+    _parse_and_wait(client, job_id)
 
     r = client.post(
         f"/api/jobs/{job_id}/generate",
@@ -291,7 +361,7 @@ def test_generate_writes_review_case_and_audit_report_available(client, monkeypa
     job_id = _create_job(client)
     _upload(client, job_id, ["review.jpg"])
     _mock_results(monkeypatch, {"review.jpg": _make_ok_result(currency=None, amount=250.0)})
-    parse_res = client.post(f"/api/jobs/{job_id}/parse").json()
+    parse_res = _parse_and_wait(client, job_id).json()
     assert parse_res["n_review"] == 1
 
     r = client.post(f"/api/jobs/{job_id}/generate", json={"description": "revision"})
