@@ -5,6 +5,11 @@ venv/
 output/
 .env
 
+# Artefactos de PyInstaller (ver app.spec/build.bat) — generados, no versionados.
+# app.spec sí se versiona (es el build reproducible).
+build/
+dist/
+
 # Archivo de secretos local con la API key de Anthropic (texto plano, ver src/api_key.py).
 secrets.yaml
 git s

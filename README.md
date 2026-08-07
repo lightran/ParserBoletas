@@ -10,6 +10,7 @@ rendición de gastos con el formato de
 - [Configuración del entorno](#configuración-del-entorno)
 - [Ejecución](#ejecución)
 - [Interfaz web](#interfaz-web)
+- [Empaquetar como ejecutable de Windows](#empaquetar-como-ejecutable-de-windows)
 - [Mecánica de funcionamiento](#mecánica-de-funcionamiento)
 - [Esquema del Excel de salida](#esquema-del-excel-de-salida)
 - [Reporte de auditoría](#reporte-de-auditoría)
@@ -220,12 +221,14 @@ python app.py
 ```
 
 Un solo comando, un solo proceso (FastAPI + uvicorn sirviendo la página y corriendo
-el pipeline, sin frontend separado ni build de Node): levanta el servidor en
-`http://127.0.0.1:8000` y abre el navegador ahí automáticamente. `Ctrl+C` para
-detenerlo. Puertos/host configurables con las variables de entorno
-`PARSERBOLETAS_PORT` / `PARSERBOLETAS_HOST` si el 8000 ya está en uso. Correr desde la
-raíz del repo, igual que la CLI (las rutas de `config.yaml` son relativas al directorio
-de trabajo).
+el pipeline, sin frontend separado ni build de Node): levanta el servidor y abre el
+navegador ahí automáticamente. `Ctrl+C` para detenerlo. Usa el puerto `8000` por
+defecto, o uno libre elegido por el sistema operativo si está ocupado; puerto/host
+configurables con las variables de entorno `PARSERBOLETAS_PORT` / `PARSERBOLETAS_HOST`.
+`config.yaml`/`secrets.yaml` se resuelven en la raíz del repo sin importar desde qué
+directorio corras el comando (ver `src/paths.py`) — la CLI sigue siendo relativa al
+directorio de trabajo, sin cambios. También se puede correr como ejecutable portable
+sin instalar Python — ver "Empaquetar como ejecutable de Windows" abajo.
 
 Flujo en la página:
 
@@ -248,6 +251,74 @@ Flujo en la página:
 
 No reemplaza la CLI — `python src/main.py boletas/ ...` sigue funcionando igual, para
 scripting o CI.
+
+## Empaquetar como ejecutable de Windows
+
+La interfaz web se puede distribuir como un `.exe` portable de Windows, sin que
+quien lo use tenga que instalar Python ni ninguna dependencia — solo necesita su
+propia API key de Anthropic y conexión a internet. Empaquetado con
+[PyInstaller](https://pyinstaller.org/), modo **one-file** por defecto (un solo
+`.exe`, autoextraíble a una carpeta temporal en cada arranque). **Hay que construirlo
+en Windows** — PyInstaller no cross-compila.
+
+### Construir el ejecutable
+
+```powershell
+venv\Scripts\activate
+pip install -r requirements.txt -r requirements-build.txt
+build.bat
+```
+
+(`requirements-build.txt` trae `pyinstaller` + `pyinstaller-hooks-contrib` — son
+herramientas de build, no dependencias de runtime; el usuario final del `.exe` nunca
+las instala). Resultado: `dist\ParserBoletas.exe` (~100 MB — trae embebidos el
+runtime de Python, OpenCV, PyMuPDF, y el resto de `requirements.txt`).
+
+El build usa `app.spec` (versionado en el repo, reproducible — no son solo flags
+sueltos de `pyinstaller`). Ahí está declarado explícitamente:
+
+- **Recursos bundleados** (solo lectura): `src/web/templates/`, `src/web/static/`,
+  `plantilla/*.xlsx`, y un `config.yaml` de fábrica (se usa para sembrar una copia
+  editable la primera vez que se corre el `.exe` — ver más abajo).
+- **Hidden imports** verificados contra los hooks de `pyinstaller-hooks-contrib`
+  instalados (no adivinados): `uvicorn`, `cv2`, `pydantic`, `anyio` y `certifi` ya
+  traen hook oficial (`certifi` bundlea `cacert.pem` automáticamente, necesario para
+  que la validación SSL de las llamadas a la API de Claude funcione en una máquina
+  limpia); `python-multipart` (subida de boletas), `fitz` (PyMuPDF) y `jiter` se
+  agregaron a mano porque no tienen hook dedicado.
+
+### Cómo lo usa el usuario final
+
+1. Doble clic en `ParserBoletas.exe`. Se abre una ventana de consola (muestra la URL
+   y los logs — cerrarla detiene el servidor) y el navegador se abre solo.
+2. **Windows puede mostrar una advertencia de SmartScreen** ("Windows protegió tu PC")
+   porque el `.exe` no está firmado digitalmente. Para continuar: "Más información" →
+   "Ejecutar de todas formas". Es esperable en un ejecutable sin firmar — para
+   distribuirlo más ampliamente (fuera del equipo/organización) conviene firmarlo con
+   un certificado de firma de código, lo cual está fuera del alcance de este build.
+3. La primera vez, la página pide la API key de Anthropic (campo tipo password) y la
+   guarda en `secrets.yaml`, junto al `.exe` — igual que corriendo desde código fuente,
+   nunca se sube a git ni se comparte.
+4. Requiere conexión a internet (llama a la API de Claude) — sin eso, cada boleta
+   queda marcada para revisión con el motivo correspondiente, no revienta.
+5. `config.yaml` también queda junto al `.exe` (se copia ahí solo la primera vez) —
+   se puede editar a mano para calibrar el comportamiento sin tocar código, igual que
+   documenta la sección de arriba.
+
+### Modo one-folder (arranca más rápido)
+
+El modo por defecto (one-file) es más lento para arrancar porque se autoextrae a una
+carpeta temporal en cada ejecución. Para generar en cambio una carpeta **one-folder**
+(el `.exe` + varios archivos de soporte sueltos, arranca más rápido porque no hay que
+autoextraer nada) sin editar `app.spec`:
+
+```powershell
+set PARSERBOLETAS_ONEDIR=1
+build.bat
+```
+
+Resultado: `dist\ParserBoletas\ParserBoletas.exe` — hay que repartir toda la carpeta
+`dist\ParserBoletas\`, no solo el `.exe` suelto.
 
 ## Mecánica de funcionamiento
 
@@ -420,7 +491,9 @@ queda en FX=1 por no haber moneda contra la cual calcular nada.
 
 ```
 ParserBoletas/
-  app.py              # entrypoint único de la interfaz web (python app.py)
+  app.py              # entrypoint único de la interfaz web (python app.py, o el .exe empaquetado)
+  app.spec            # build de PyInstaller (reproducible) — ver build.bat
+  build.bat           # genera dist/ParserBoletas.exe
   boletas/            # imágenes/PDFs de boletas a procesar
   plantilla/          # Excel de rendición de ejemplo (formato de referencia)
   src/
@@ -434,6 +507,7 @@ ParserBoletas/
     cost.py           # acumulación de tokens + estimación de costo de la corrida
     api_key.py        # resuelve/guarda la API key (env var > secrets.yaml > prompt)
     main.py           # orquesta el pipeline sobre una carpeta (CLI) + helpers compartidos con la web
+    paths.py           # resource_path()/writable_path() — recursos bundleados vs. escribibles (PyInstaller)
     web/
       routes.py       # endpoints FastAPI — fachada sobre la misma lógica de main.py
       state.py        # sesiones ("jobs") en memoria: boletas subidas + resultados intermedios
@@ -442,7 +516,8 @@ ParserBoletas/
   tests/              # pytest, con casos armados a partir de boletas reales
   config.yaml         # parámetros calibrables (nunca secretos)
   secrets.yaml        # API key en texto plano — generado localmente, en .gitignore
-  requirements.txt
+  requirements.txt        # dependencias de runtime
+  requirements-build.txt  # + pyinstaller, solo para generar el .exe
   CLAUDE.md           # contexto técnico detallado para seguir iterando con Claude Code
   README.md           # este archivo
 ```
@@ -512,7 +587,13 @@ el Excel descargado no tenga pestaña "Complementary info" con solo CLP y sí te
 "Complementary info - PEN" con el FX real correcto cuando corresponde, y que una boleta
 para revisión deje disponible la descarga de `auditoria.xlsx`. No hacen llamadas a la
 API de Claude (la llamada de red está aislada y mockeada), así que corren sin necesidad
-de `ANTHROPIC_API_KEY`.
+de `ANTHROPIC_API_KEY`. `src/paths.py` (`tests/test_paths.py`, mockeando
+`sys.frozen`/`sys._MEIPASS`/`sys.executable`): `resource_path` resuelve contra la raíz
+del repo en desarrollo y contra `_MEIPASS` empaquetado; `writable_path` resuelve contra
+la raíz del repo en desarrollo y junto al `.exe` empaquetado. Y en `tests/test_web.py`:
+que `excel.template_path` se resuelva a una ruta absoluta existente, y que
+`config.yaml` se siembre desde el bundleado solo si no existe ya en la ubicación
+escribible (sin pisar ediciones del usuario).
 
 ## Fuera de alcance en v1
 

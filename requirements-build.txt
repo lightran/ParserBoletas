@@ -1,0 +1,10 @@
+# Herramientas de build, no dependencias de runtime de la app.
+# El usuario final del .exe nunca instala nada de este archivo — solo hace falta
+# en la máquina de desarrollo que genera el ejecutable (ver README.md > "Empaquetar
+# como ejecutable de Windows" y build.bat).
+#
+# Uso:
+#   pip install -r requirements.txt -r requirements-build.txt
+
+pyinstaller>=6.10.0
+pyinstaller-hooks-contrib>=2024.0

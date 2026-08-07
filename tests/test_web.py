@@ -9,6 +9,7 @@ tiene su propia cobertura en los demás archivos de test.
 
 import io
 import time
+from pathlib import Path
 
 import openpyxl
 import pytest
@@ -372,3 +373,39 @@ def test_generate_writes_review_case_and_audit_report_available(client, monkeypa
     assert dl.status_code == 200
     wb = openpyxl.load_workbook(io.BytesIO(dl.content))
     assert "Índice" in wb.sheetnames
+
+
+# --- resolución de rutas (empaquetado con PyInstaller) --------------------------
+
+
+def test_config_resolves_template_path_to_absolute_existing_file():
+    # excel.template_path en config.yaml sigue siendo una ruta relativa legible
+    # ("plantilla/..."); _config() la resuelve vía resource_path() para que
+    # apunte al archivo real, empaquetado o no (ver src/paths.py).
+    config = routes._config()
+    template_path = Path(config["excel"]["template_path"])
+    assert template_path.is_absolute()
+    assert template_path.exists()
+
+
+def test_ensure_default_config_seeds_writable_copy_when_missing(tmp_path, monkeypatch):
+    fake_writable = tmp_path / "config.yaml"
+    monkeypatch.setattr(routes, "CONFIG_PATH", fake_writable)
+    assert not fake_writable.exists()
+
+    routes._ensure_default_config()
+
+    assert fake_writable.exists()
+    assert fake_writable.read_text(encoding="utf-8") == routes.BUNDLED_CONFIG_PATH.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_ensure_default_config_does_not_overwrite_existing_file(tmp_path, monkeypatch):
+    fake_writable = tmp_path / "config.yaml"
+    fake_writable.write_text("custom: true\n", encoding="utf-8")
+    monkeypatch.setattr(routes, "CONFIG_PATH", fake_writable)
+
+    routes._ensure_default_config()
+
+    assert fake_writable.read_text(encoding="utf-8") == "custom: true\n"

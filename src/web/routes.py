@@ -35,13 +35,21 @@ import complementary_info  # noqa: E402
 import cost  # noqa: E402
 import excel_writer  # noqa: E402
 import main  # noqa: E402
+import paths  # noqa: E402
 
 from web.state import Job, JobStore  # noqa: E402
 
-BASE_DIR = Path(__file__).resolve().parent
+# Plantillas/estáticos son de solo lectura y viven bundleados (ver src/paths.py):
+# empaquetado, dentro de sys._MEIPASS; en desarrollo, en el árbol del repo.
+TEMPLATES_DIR = paths.resource_path("src/web/templates")
+STATIC_DIR = paths.resource_path("src/web/static")
+BUNDLED_CONFIG_PATH = paths.resource_path("config.yaml")
 
-CONFIG_PATH = Path(os.environ.get("PARSERBOLETAS_CONFIG", "config.yaml"))
-SECRETS_PATH = Path(os.environ.get("PARSERBOLETAS_SECRETS", str(api_key.DEFAULT_SECRETS_PATH)))
+# config.yaml/secrets.yaml son escribibles y deben sobrevivir entre corridas —
+# junto al .exe cuando está empaquetado, no en la carpeta temporal de PyInstaller
+# (ver paths.writable_path). Los env vars siguen teniendo prioridad, igual que antes.
+CONFIG_PATH = Path(os.environ["PARSERBOLETAS_CONFIG"]) if "PARSERBOLETAS_CONFIG" in os.environ else paths.writable_path("config.yaml")
+SECRETS_PATH = Path(os.environ["PARSERBOLETAS_SECRETS"]) if "PARSERBOLETAS_SECRETS" in os.environ else paths.writable_path("secrets.yaml")
 
 store = JobStore()
 
@@ -53,12 +61,33 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="ParserBoletas", lifespan=lifespan)
-templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
-app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+def _ensure_default_config() -> None:
+    """Primera corrida: si no hay `config.yaml` en la ubicación escribible (ej. un
+    .exe suelto en una carpeta vacía), lo siembra desde el que viene bundleado —
+    así el usuario puede editarlo después sin perder los cambios en la próxima
+    corrida, y sin depender de que exista algo más además del ejecutable."""
+    if not CONFIG_PATH.exists() and BUNDLED_CONFIG_PATH.exists():
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(BUNDLED_CONFIG_PATH, CONFIG_PATH)
+
+
+_ensure_default_config()
 
 
 def _config() -> dict:
-    return main.load_config(CONFIG_PATH)
+    config = main.load_config(CONFIG_PATH)
+    # La plantilla Excel es de solo lectura y va bundleada; se resuelve contra
+    # resource_path() para que la ruta relativa de config.yaml ("plantilla/...")
+    # siga siendo portable y editable a mano, empaquetado o no.
+    excel_cfg = config.get("excel", {})
+    template_path = excel_cfg.get("template_path")
+    if template_path and not Path(template_path).is_absolute():
+        excel_cfg["template_path"] = str(paths.resource_path(template_path))
+    return config
 
 
 def _get_job(job_id: str) -> Job:

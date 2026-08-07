@@ -134,6 +134,69 @@ de implementar:
   llama a `api_key.save_api_key` (mismo criterio de persistencia que la CLI, ver
   sección anterior).
 
+## Empaquetado con PyInstaller (`app.spec`, `build.bat`, `src/paths.py`)
+
+La interfaz web (no la CLI) se puede empaquetar como `.exe` portable de Windows —
+`build.bat` corre `pyinstaller app.spec --noconfirm --clean`, genera
+`dist/ParserBoletas.exe` (one-file por defecto; `set PARSERBOLETAS_ONEDIR=1` antes de
+`build.bat` para one-folder, mismo `app.spec`, sin editarlo). Hay que construirlo en
+Windows (PyInstaller no cross-compila). Nada de esto toca lógica de negocio — es
+exclusivamente resolución de rutas en la capa de interfaz.
+
+- **`src/paths.py`** (nuevo, sin dependencias de los módulos de negocio):
+  `resource_path(rel)` resuelve recursos de **solo lectura** — `sys._MEIPASS` si el
+  proceso está congelado (`sys.frozen`), si no la raíz del repo. `writable_path(rel)`
+  resuelve recursos **escribibles y persistentes entre corridas** — la carpeta de
+  `sys.executable` si está congelado, si no la raíz del repo. Ningún módulo de negocio
+  (`excel_writer.py`, `audit_writer.py`, `complementary_info.py`, `api_key.py`) sabe de
+  esto — siguen recibiendo objetos `Path` ya resueltos, igual que antes; solo
+  `src/web/routes.py` y `app.py` (la capa de interfaz web) llaman a `paths.py`. La CLI
+  (`src/main.py`) no se tocó: sigue resolviendo `config.yaml`/`secrets.yaml` relativos
+  al directorio de trabajo, como siempre.
+- **`src/web/routes.py`**: `TEMPLATES_DIR`/`STATIC_DIR` vía `resource_path("src/web/...")`
+  (antes relativos a `__file__`, que no es fiable en un one-file — el código fuente vive
+  en el PYZ, no extraído a disco). `CONFIG_PATH`/`SECRETS_PATH` (los env vars
+  `PARSERBOLETAS_CONFIG`/`PARSERBOLETAS_SECRETS` siguen teniendo prioridad) pasan de
+  `Path("config.yaml")`/`api_key.DEFAULT_SECRETS_PATH` (CWD-relativos) a
+  `writable_path(...)`. `_ensure_default_config()` siembra `config.yaml` desde el
+  bundleado (`BUNDLED_CONFIG_PATH`) la primera vez que no existe en la ubicación
+  escribible — así un `.exe` suelto en una carpeta vacía igual arranca, y las ediciones
+  del usuario sobreviven a la próxima corrida (nunca se pisa un `config.yaml` existente).
+  `_config()` reescribe `excel.template_path` (que sigue siendo la ruta relativa
+  legible "plantilla/...xlsx" en el YAML) a una ruta absoluta vía `resource_path()`
+  después de cargarlo — la plantilla Excel es de solo lectura y va bundleada, nunca en
+  la ubicación escribible.
+- **Certificados SSL**: `pyinstaller-hooks-contrib` trae un hook oficial para
+  `certifi` (`collect_data_files('certifi')`) que bundlea `cacert.pem` automáticamente
+  — verificado inspeccionando el `_MEIPASS` de una build real (`certifi/cacert.pem`,
+  240KB). `app.py` además setea `SSL_CERT_FILE=certifi.where()` explícito como
+  refuerzo, por si alguna dependencia confía en esa env var en vez de resolver el
+  bundle de certifi por su cuenta.
+- **Hidden imports** (`app.spec`), verificados contra los hooks instalados en vez de
+  adivinados: `uvicorn`, `cv2`, `pydantic`, `anyio`, `certifi` ya tienen hook oficial en
+  `pyinstaller-hooks-contrib` (no hace falta declararlos). Se agregaron a mano
+  `multipart`/`python_multipart` (starlette importa `python-multipart` de forma
+  perezosa al parsear la subida de boletas — sin hook dedicado), `fitz` y `jiter`
+  (import estático que debería detectarse solo, pero sin hook dedicado — respaldo
+  barato).
+- **Puerto**: `app.py::_resolve_port` intenta bindear `PARSERBOLETAS_PORT` (default
+  8000); si está ocupado, le pide uno libre al sistema operativo (`bind(host, 0)`) en
+  vez de fallar al arrancar — el navegador se abre contra el puerto que realmente se
+  usó, no el preferido.
+- **`datas` de `app.spec`** mantienen la misma ruta relativa entre origen y destino
+  dentro del bundle (ej. `("plantilla", "plantilla")`) para que coincida exactamente
+  con lo que espera `resource_path()`.
+- Verificado end-to-end con un build real: arranca desde una carpeta vacía (sin
+  `config.yaml`/`plantilla`/nada salvo el `.exe`), siembra `config.yaml`/`secrets.yaml`
+  junto al `.exe`, sube y procesa una boleta real (PyMuPDF/OpenCV/Pillow funcionando
+  dentro del bundle), y completa una llamada HTTPS real a la API de Anthropic (con una
+  key inválida a propósito — confirma que la validación SSL no es el problema, ya que
+  se recibe una respuesta de la API en vez de un error de certificado). Repetido con el
+  `.exe` corriendo con un `PATH` reducido a solo directorios de sistema de Windows (sin
+  Python/venv en ningún lado alcanzable) como aproximación a una máquina limpia — la
+  validación definitiva en una VM Windows real sin Python queda pendiente del lado del
+  usuario.
+
 ## Compatibilidad con Windows
 
 Revisado a fondo — la mayor parte del pipeline ya era compatible sin cambios: todo el
