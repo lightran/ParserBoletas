@@ -138,6 +138,18 @@ def sanitize_filename_component(text: str) -> str:
     return text.strip("_")
 
 
+def sanitize_receipt_name(text: str) -> str:
+    """Sanea el nombre editable de una boleta (rename_receipt / PATCH .../receipts):
+    reemplaza los caracteres prohibidos en un nombre de archivo (/ \\ : * ? " < > |)
+    por guion bajo, pero A DIFERENCIA de sanitize_filename_component preserva los
+    espacios (solo colapsa repeticiones) — el nombre de archivo sin extensión termina
+    siendo la Comments de esa boleta en el Excel (ver build_comments/Path.stem), y ahí
+    "Almuerzo cliente X" es más legible que "Almuerzo_cliente_X"."""
+    text = _FORBIDDEN_FILENAME_CHARS_RE.sub("_", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
 def prompt_report_description() -> str:
     """Pide al usuario una descripción para el nombre del archivo de salida."""
     while True:

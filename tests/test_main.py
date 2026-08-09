@@ -29,6 +29,7 @@ from main import (
     prompt_report_description,
     prompt_usd_charged,
     sanitize_filename_component,
+    sanitize_receipt_name,
 )
 from validate import ValidationResult
 
@@ -302,6 +303,32 @@ def test_sanitize_filename_component_collapses_repeated_underscores():
 
 def test_sanitize_filename_component_can_result_in_empty_string():
     assert sanitize_filename_component("   ///:::   ") == ""
+
+
+# --- sanitize_receipt_name (nombre editable de boleta: preserva espacios) ---
+
+
+def test_sanitize_receipt_name_preserves_internal_spaces():
+    # A diferencia de sanitize_filename_component: el resultado termina en Comments
+    # del Excel, y ahí un espacio se lee mejor que un guion bajo.
+    assert sanitize_receipt_name("Almuerzo cliente X") == "Almuerzo cliente X"
+
+
+def test_sanitize_receipt_name_replaces_forbidden_characters():
+    result = sanitize_receipt_name('Viaje/Peru: reporte*final?"raro"<>|')
+    assert not any(ch in result for ch in '/\\:*?"<>|')
+
+
+def test_sanitize_receipt_name_trims_surrounding_whitespace():
+    assert sanitize_receipt_name("  Almuerzo cliente X  ") == "Almuerzo cliente X"
+
+
+def test_sanitize_receipt_name_collapses_repeated_internal_spaces():
+    assert sanitize_receipt_name("Almuerzo    cliente   X") == "Almuerzo cliente X"
+
+
+def test_sanitize_receipt_name_can_result_in_empty_string():
+    assert sanitize_receipt_name("   ") == ""
 
 
 # --- prompt_report_description ---

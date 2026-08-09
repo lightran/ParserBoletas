@@ -340,7 +340,9 @@ def rename_receipt(job_id: str, filename: str, payload: RenameReceiptRequest):
     if not old_path.exists():
         raise HTTPException(status_code=404, detail="Boleta no encontrada.")
 
-    new_stem = main.sanitize_filename_component(payload.new_name)
+    # sanitize_receipt_name (no sanitize_filename_component): preserva espacios, ese
+    # nombre termina siendo la Comments de la boleta en el Excel — ver su docstring.
+    new_stem = main.sanitize_receipt_name(payload.new_name)
     if not new_stem:
         raise HTTPException(status_code=400, detail="El nombre no puede quedar vacío.")
 

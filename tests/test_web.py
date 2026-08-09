@@ -171,7 +171,7 @@ def test_rename_receipt_changes_name_and_resets_parse_state(client, monkeypatch)
         json={"new_name": "Almuerzo cliente X"},
     )
     assert r.status_code == 200
-    assert r.json()["files"] == ["Almuerzo_cliente_X.jpg"]
+    assert r.json()["files"] == ["Almuerzo cliente X.jpg"]
 
     # Renombrar invalida el parseo anterior, igual que subir/quitar una boleta.
     status = client.get(f"/api/jobs/{job_id}/parse/status").json()
@@ -553,10 +553,10 @@ def test_rename_collection_receipt(client):
         json={"new_name": "Almuerzo cliente X"},
     )
     assert r.status_code == 200
-    assert r.json()["receipts"] == ["Almuerzo_cliente_X.jpg"]
+    assert r.json()["receipts"] == ["Almuerzo cliente X.jpg"]
 
     detail = client.get(f"/api/collections/{slug}").json()
-    assert detail["receipts"] == ["Almuerzo_cliente_X.jpg"]
+    assert detail["receipts"] == ["Almuerzo cliente X.jpg"]
 
 
 def test_rename_collection_receipt_rejects_collision(client):

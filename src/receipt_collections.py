@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import paths
-from main import SUPPORTED_SUFFIXES, sanitize_filename_component
+from main import SUPPORTED_SUFFIXES, sanitize_filename_component, sanitize_receipt_name
 
 COLLECTIONS_DIRNAME = "colecciones"
 METADATA_FILENAME = "coleccion.json"
@@ -182,7 +182,7 @@ def rename_receipt(slug: str, filename: str, new_name: str) -> Path:
     if not old_path.exists():
         raise FileNotFoundError(filename)
 
-    sanitized = sanitize_filename_component(new_name)
+    sanitized = sanitize_receipt_name(new_name)
     if not sanitized:
         raise ValueError("El nombre no puede quedar vacío después de sanearlo.")
 

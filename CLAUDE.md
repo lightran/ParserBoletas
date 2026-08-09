@@ -182,11 +182,15 @@ download) — cero lógica de FX/generación duplicada.
   descriptiva del nombre (sin extensión) — la extensión se preserva siempre, para que
   no pueda cambiar el tipo de archivo sin querer (`Path.with_stem`, misma semántica de
   "solo la última extensión" que `main.py::build_comments`). El nuevo nombre se sanea
-  con `main.sanitize_filename_component` (mismo criterio que el resto de la app);
-  lanza `FileExistsError` si colisiona con otra boleta ya presente. Existe porque el
-  nombre de archivo es justo lo que termina en la columna Comments del Excel — un
-  nombre de cámara tipo `IMG_20260615_142033.jpg` no dice nada, pero
-  `Almuerzo_cliente_X.jpg` sí. Hay un endpoint análogo para el flujo de carga suelta
+  con `main.sanitize_receipt_name` — **no** `sanitize_filename_component`: a
+  diferencia de esa (usada para el slug de la colección y el nombre del Excel de
+  salida, donde los espacios se reemplazan por `_`), acá se preservan los espacios
+  (solo se colapsan repeticiones), porque este nombre es justo lo que termina en la
+  columna Comments del Excel (`Path.stem`) — `Almuerzo cliente X` se lee mejor ahí que
+  `Almuerzo_cliente_X`. Sigue reemplazando los caracteres prohibidos del sistema de
+  archivos (`/ \ : * ? " < > |`) por `_`, igual que la otra función. Lanza
+  `FileExistsError` si colisiona con otra boleta ya presente. Hay un endpoint análogo
+  para el flujo de carga suelta
   (`PATCH /api/jobs/{id}/receipts/{filename}`, en `routes.py` directamente — no pasa
   por `receipt_collections` porque `job.upload_dir` no es necesariamente la carpeta de
   una colección), con el mismo saneo/preservación de extensión/manejo de colisión.

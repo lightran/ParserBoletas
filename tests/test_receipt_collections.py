@@ -126,14 +126,14 @@ def test_rename_receipt_changes_stem_and_preserves_extension_and_content():
     summary = rc.create_collection("Viaje Lima")
     rc.add_receipt(summary.slug, "IMG_20260615_142033.jpg", b"foto")
 
-    # Mismo saneo que el resto de la app (sanitize_filename_component): los
-    # espacios quedan como guion bajo — consistente con nombres de Excel/slugs.
+    # sanitize_receipt_name (no sanitize_filename_component): preserva espacios,
+    # porque este nombre termina siendo la Comments de la boleta en el Excel.
     new_path = rc.rename_receipt(summary.slug, "IMG_20260615_142033.jpg", "Almuerzo cliente X")
 
-    assert new_path.name == "Almuerzo_cliente_X.jpg"
+    assert new_path.name == "Almuerzo cliente X.jpg"
     receipts = {p.name: p for p in rc.list_receipts(summary.slug)}
     assert "IMG_20260615_142033.jpg" not in receipts
-    assert receipts["Almuerzo_cliente_X.jpg"].read_bytes() == b"foto"
+    assert receipts["Almuerzo cliente X.jpg"].read_bytes() == b"foto"
 
 
 def test_rename_receipt_sanitizes_new_name():
