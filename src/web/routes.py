@@ -36,6 +36,7 @@ import cost  # noqa: E402
 import excel_writer  # noqa: E402
 import main  # noqa: E402
 import paths  # noqa: E402
+import receipt_collections  # noqa: E402
 
 from web.state import Job, JobStore  # noqa: E402
 
@@ -129,6 +130,17 @@ class GenerateRequest(BaseModel):
     conversions: List[ConversionInput] = Field(default_factory=list)
 
 
+class CreateCollectionRequest(BaseModel):
+    name: str
+
+
+class RenameReceiptRequest(BaseModel):
+    # Solo la parte descriptiva (sin extensión) — ver receipt_collections.rename_receipt
+    # y el bloque análogo para jobs más abajo: la extensión nunca la elige el usuario,
+    # para no dejar que un archivo cambie de tipo por accidente al renombrarlo.
+    new_name: str
+
+
 # --- Página -------------------------------------------------------------------
 
 
@@ -152,6 +164,125 @@ def set_api_key(payload: ApiKeyRequest):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"has_api_key": True}
+
+
+# --- Colecciones ------------------------------------------------------------
+#
+# Persistencia progresiva de boletas (ver src/receipt_collections.py) — capa
+# independiente de Job/JobStore. "Generar rendición" desde una colección no
+# reimplementa nada: crea un Job normal apuntado a la carpeta de la colección
+# (create_generate_job, más abajo) y de ahí en más el frontend sigue exactamente
+# los mismos pasos/endpoints que el flujo de carga suelta (/parse, /validate,
+# /generate, /download).
+
+
+def _collection_payload(summary: receipt_collections.CollectionSummary) -> dict:
+    return {
+        "slug": summary.slug,
+        "name": summary.name,
+        "created_at": summary.created_at,
+        "last_generated_at": summary.last_generated_at,
+        "n_receipts": summary.n_receipts,
+    }
+
+
+def _get_collection_or_404(slug: str) -> receipt_collections.CollectionSummary:
+    try:
+        return receipt_collections.get_collection(slug)
+    except receipt_collections.CollectionNotFoundError:
+        raise HTTPException(status_code=404, detail="Colección no encontrada.")
+
+
+@app.post("/api/collections")
+def create_collection(payload: CreateCollectionRequest):
+    try:
+        summary = receipt_collections.create_collection(payload.name)
+    except receipt_collections.CollectionAlreadyExistsError:
+        raise HTTPException(status_code=409, detail="Ya existe una colección con ese nombre.")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _collection_payload(summary)
+
+
+@app.get("/api/collections")
+def list_collections():
+    return [_collection_payload(c) for c in receipt_collections.list_collections()]
+
+
+@app.get("/api/collections/{slug}")
+def get_collection(slug: str):
+    summary = _get_collection_or_404(slug)
+    receipts = [p.name for p in receipt_collections.list_receipts(slug)]
+    return {**_collection_payload(summary), "receipts": receipts}
+
+
+@app.post("/api/collections/{slug}/receipts")
+async def upload_collection_receipts(slug: str, files: List[UploadFile] = File(...)):
+    _get_collection_or_404(slug)
+    rejected: List[str] = []
+    for upload in files:
+        suffix = Path(upload.filename or "").suffix.lower()
+        if suffix not in main.SUPPORTED_SUFFIXES:
+            rejected.append(upload.filename or "")
+            continue
+        content = await upload.read()
+        receipt_collections.add_receipt(slug, upload.filename, content)
+
+    receipts = [p.name for p in receipt_collections.list_receipts(slug)]
+    return {"receipts": receipts, "rejected": rejected}
+
+
+@app.delete("/api/collections/{slug}/receipts/{filename}")
+def delete_collection_receipt(slug: str, filename: str):
+    _get_collection_or_404(slug)
+    receipt_collections.remove_receipt(slug, filename)
+    return {"receipts": [p.name for p in receipt_collections.list_receipts(slug)]}
+
+
+@app.put("/api/collections/{slug}/receipts/{filename}")
+async def replace_collection_receipt(slug: str, filename: str, file: UploadFile = File(...)):
+    _get_collection_or_404(slug)
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in main.SUPPORTED_SUFFIXES:
+        raise HTTPException(status_code=400, detail=f"Extensión no soportada: {file.filename}")
+    content = await file.read()
+    receipt_collections.replace_receipt(slug, filename, file.filename, content)
+    return {"receipts": [p.name for p in receipt_collections.list_receipts(slug)]}
+
+
+@app.patch("/api/collections/{slug}/receipts/{filename}")
+def rename_collection_receipt(slug: str, filename: str, payload: RenameReceiptRequest):
+    _get_collection_or_404(slug)
+    try:
+        receipt_collections.rename_receipt(slug, filename, payload.new_name)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Boleta no encontrada.")
+    except FileExistsError as exc:
+        raise HTTPException(
+            status_code=409, detail=f"Ya existe una boleta llamada '{exc}'."
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"receipts": [p.name for p in receipt_collections.list_receipts(slug)]}
+
+
+@app.post("/api/collections/{slug}/generate-job")
+def create_generate_job(slug: str):
+    """Arranca el flujo de rendición para una colección: crea un Job normal
+    apuntado a su carpeta de boletas (persistente) y de salida (dentro de la
+    colección, no en el temp de JobStore) — el resto del flujo (parse/validate/
+    generate/download) es exactamente el mismo que usa la carga suelta."""
+    summary = _get_collection_or_404(slug)
+    job = store.create(
+        upload_dir=receipt_collections.boletas_dir(slug),
+        output_dir=receipt_collections.rendiciones_dir(slug),
+        collection_slug=slug,
+    )
+    return {
+        "job_id": job.id,
+        "collection_name": summary.name,
+        "files": [p.name for p in job.files],
+    }
 
 
 # --- Jobs -----------------------------------------------------------------------
@@ -194,6 +325,33 @@ def remove_receipt(job_id: str, filename: str):
     target = job.upload_dir / filename
     job.files = [p for p in job.files if p.name != filename]
     target.unlink(missing_ok=True)
+    _reset_parse_state(job)
+    return {"files": [p.name for p in job.files]}
+
+
+@app.patch("/api/jobs/{job_id}/receipts/{filename}")
+def rename_receipt(job_id: str, filename: str, payload: RenameReceiptRequest):
+    # Mismo criterio que receipt_collections.rename_receipt (extensión preservada,
+    # nombre saneado con main.sanitize_filename_component) pero sin pasar por
+    # receipt_collections — job.upload_dir no es necesariamente la carpeta de una
+    # colección (el flujo de carga suelta usa un temporal propio del job).
+    job = _get_job(job_id)
+    old_path = job.upload_dir / filename
+    if not old_path.exists():
+        raise HTTPException(status_code=404, detail="Boleta no encontrada.")
+
+    new_stem = main.sanitize_filename_component(payload.new_name)
+    if not new_stem:
+        raise HTTPException(status_code=400, detail="El nombre no puede quedar vacío.")
+
+    new_path = old_path.with_stem(new_stem)
+    if new_path != old_path and new_path.exists():
+        raise HTTPException(
+            status_code=409, detail=f"Ya existe una boleta llamada '{new_path.name}'."
+        )
+
+    old_path.rename(new_path)
+    job.files = sorted(new_path if p.name == filename else p for p in job.files)
     _reset_parse_state(job)
     return {"files": [p.name for p in job.files]}
 
@@ -355,6 +513,8 @@ def generate_job(job_id: str, payload: GenerateRequest):
 
     job.report_path = report_path
     job.audit_path = audit_result_path
+    if job.collection_slug:
+        receipt_collections.mark_generated(job.collection_slug)
 
     return {
         "report_url": f"/api/jobs/{job_id}/download/report",

@@ -37,7 +37,16 @@
         </div>
       </div>
 
-      <nav class="flex flex-col gap-1">
+      <button
+        x-show="view !== 'landing'"
+        x-cloak
+        @click="goToLanding()"
+        class="mb-6 flex items-center gap-1.5 text-xs font-medium text-gray-400 hover:text-white"
+      >
+        <span aria-hidden="true">←</span> Colecciones
+      </button>
+
+      <nav class="flex flex-col gap-1" x-show="view === 'workspace'" x-cloak>
         <template x-for="step in steps" :key="step.key">
           <div
             class="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors"
@@ -68,7 +77,9 @@
             <span class="h-3 w-1 rounded-full bg-hitachi"></span>
             Rendición de gastos
           </div>
-          <h1 class="text-2xl font-bold text-gray-900">Nueva rendición</h1>
+          <h1 class="text-2xl font-bold text-gray-900" x-show="view === 'landing'" x-cloak>Colecciones</h1>
+          <h1 class="text-2xl font-bold text-gray-900" x-show="view === 'collection-detail'" x-cloak x-text="activeCollection?.name"></h1>
+          <h1 class="text-2xl font-bold text-gray-900" x-show="view === 'workspace'" x-cloak>Nueva rendición</h1>
         </header>
 
         <!-- Error banner -->
@@ -79,252 +90,409 @@
           x-text="error"
         ></div>
 
-        <!-- API key -->
-        <section x-show="hasApiKey === false || changingApiKey" x-cloak class="mb-6 rounded-xl border border-gray-200 p-5">
-          <h2 class="mb-1 text-sm font-semibold text-gray-900">API key de Anthropic</h2>
-          <p class="mb-3 text-sm text-gray-500" x-show="hasApiKey === false">
-            No se encontró una key guardada. Se guarda localmente en <code class="text-xs">secrets.yaml</code>
-            (nunca se sube a git).
-          </p>
-          <p class="mb-3 text-sm text-gray-500" x-show="hasApiKey === true" x-cloak>
-            Vas a reemplazar la key guardada en <code class="text-xs">secrets.yaml</code>.
-          </p>
-          <div class="flex gap-2">
-            <input
-              type="password"
-              x-model="apiKeyInput"
-              placeholder="sk-ant-..."
-              class="w-full max-w-sm rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-hitachi focus:outline-none focus:ring-1 focus:ring-hitachi"
-            />
-            <button
-              @click="saveApiKey()"
-              :disabled="!apiKeyInput || savingApiKey"
-              class="rounded-lg bg-hitachi px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
-            >
-              Guardar
-            </button>
-            <button
-              x-show="hasApiKey === true"
-              x-cloak
-              @click="changingApiKey = false; apiKeyInput = ''"
-              class="rounded-lg px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700"
-            >
-              Cancelar
-            </button>
-          </div>
-        </section>
-
-        <div x-show="hasApiKey === true && !changingApiKey" x-cloak class="mb-6 -mt-4">
-          <button @click="changingApiKey = true" class="text-xs font-medium text-gray-400 hover:text-hitachi">
-            Cambiar API key
-          </button>
-        </div>
-
-        <!-- Boletas -->
-        <section class="mb-6 rounded-xl border border-gray-200 p-5">
-          <h2 class="mb-3 text-sm font-semibold text-gray-900">Boletas</h2>
-
-          <div
-            @dragover.prevent="dragOver = true"
-            @dragleave.prevent="dragOver = false"
-            @drop.prevent="onFileDrop($event)"
-            @click="$refs.fileInput.click()"
-            class="cursor-pointer rounded-xl border-2 border-dashed px-6 py-10 text-center transition-colors"
-            :class="dragOver ? 'border-hitachi bg-hitachi/5' : 'border-gray-300 hover:border-gray-400'"
-          >
-            <p class="text-sm font-medium text-gray-700">Arrastra las boletas aquí</p>
-            <p class="mt-1 text-xs text-gray-500">o hacé clic para elegir archivos — jpg, png, pdf</p>
-            <input
-              x-ref="fileInput"
-              type="file"
-              multiple
-              accept=".jpg,.jpeg,.png,.pdf"
-              class="hidden"
-              @change="onFileInput($event)"
-            />
-          </div>
-
-          <ul class="mt-4 divide-y divide-gray-100" x-show="files.length" x-cloak>
-            <template x-for="name in files" :key="name">
-              <li class="flex items-center justify-between py-2 text-sm">
-                <span class="truncate text-gray-700" x-text="name"></span>
-                <button @click="removeFile(name)" class="text-xs font-medium text-gray-400 hover:text-hitachi">
-                  Quitar
-                </button>
-              </li>
-            </template>
-          </ul>
-        </section>
-
-        <!-- Datos del reporte -->
-        <section class="mb-6 rounded-xl border border-gray-200 p-5">
-          <h2 class="mb-3 text-sm font-semibold text-gray-900">Datos del reporte</h2>
-          <label class="mb-1 block text-xs font-medium uppercase tracking-wide text-gray-500">
-            Descripción del reporte (nombre del archivo)
-          </label>
-          <input
-            type="text"
-            x-model="description"
-            @input.debounce.400ms="checkReady()"
-            placeholder="ej. viaje-lima-junio"
-            class="w-full max-w-sm rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-hitachi focus:outline-none focus:ring-1 focus:ring-hitachi"
-          />
-
-          <button
-            @click="parseReceipts()"
-            :disabled="!files.length || parsing || hasApiKey === false"
-            class="mt-4 rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:border-hitachi hover:text-hitachi disabled:opacity-40"
-          >
-            <span x-show="!parsing">Procesar boletas</span>
-            <span x-show="parsing" x-cloak>Procesando…</span>
-          </button>
-
-          <div x-show="parsing" x-cloak class="mt-4">
-            <div class="mb-1.5 flex items-center justify-between text-xs text-gray-500">
-              <span class="truncate pr-4" x-text="parseProgress.current_file ? ('Procesando ' + parseProgress.current_file + '…') : 'Procesando…'"></span>
-              <span class="shrink-0 font-medium text-gray-700" x-text="parseProgress.done + '/' + parseProgress.total + ' boletas procesadas'"></span>
-            </div>
-            <div class="h-2 w-full overflow-hidden rounded-full bg-gray-100">
-              <div
-                class="h-full rounded-full bg-hitachi transition-all duration-300 ease-out"
-                :style="'width: ' + (parseProgress.total ? Math.round((parseProgress.done / parseProgress.total) * 100) : 0) + '%'"
-              ></div>
-            </div>
-          </div>
-        </section>
-
-        <!-- Resultado del parseo -->
-        <section x-show="parsed" x-cloak class="mb-6">
-          <div class="grid grid-cols-3 gap-4">
-            <div class="rounded-xl border border-gray-200 p-4">
-              <div class="mb-3 flex h-9 w-9 items-center justify-center rounded-lg bg-gray-100">
-                <span class="h-2.5 w-2.5 rounded-full bg-gray-400"></span>
-              </div>
-              <div class="text-2xl font-bold text-gray-900" x-text="parseResult?.n_total ?? 0"></div>
-              <div class="text-xs text-gray-500">Boletas totales</div>
-            </div>
-            <div class="rounded-xl border border-gray-200 p-4">
-              <div class="mb-3 flex h-9 w-9 items-center justify-center rounded-lg bg-gray-100">
-                <span class="h-2.5 w-2.5 rounded-full bg-emerald-500"></span>
-              </div>
-              <div class="text-2xl font-bold text-gray-900" x-text="parseResult?.n_ok ?? 0"></div>
-              <div class="text-xs text-gray-500">OK</div>
-            </div>
-            <div class="rounded-xl border border-gray-200 p-4">
-              <div class="mb-3 flex h-9 w-9 items-center justify-center rounded-lg bg-gray-100">
-                <span class="h-2.5 w-2.5 rounded-full bg-hitachi"></span>
-              </div>
-              <div class="text-2xl font-bold text-gray-900" x-text="parseResult?.n_review ?? 0"></div>
-              <div class="text-xs text-gray-500">Para revisión</div>
-            </div>
-          </div>
-        </section>
-
-        <!-- Tipo de cambio -->
-        <section
-          x-show="parsed && parseResult && parseResult.needs_usd_fx"
-          x-cloak
-          class="mb-6 rounded-xl border border-gray-200 p-5"
-        >
-          <h2 class="mb-3 text-sm font-semibold text-gray-900">Tipo de cambio</h2>
-
-          <label class="mb-1 block text-xs font-medium uppercase tracking-wide text-gray-500">
-            USD -&gt; CLP (según tu banco)
-          </label>
-          <input
-            type="number"
-            step="0.01"
-            x-model.number="usdFx"
-            @input.debounce.400ms="checkReady()"
-            placeholder="922"
-            class="w-40 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-hitachi focus:outline-none focus:ring-1 focus:ring-hitachi"
-          />
-
-          <template x-for="currencyCode in (parseResult?.conversion_currencies ?? [])" :key="currencyCode">
-            <div class="mt-5 border-t border-gray-100 pt-4">
-              <div class="mb-2 text-sm font-medium text-gray-800" x-text="'FX real: ' + currencyCode + ' -> CLP'"></div>
-
-              <label class="mb-1 block text-xs font-medium uppercase tracking-wide text-gray-500">
-                Boleta en <span x-text="currencyCode"></span> a usar
-              </label>
-              <select
-                x-model="conversionSelections[currencyCode].filename"
-                @change="checkReady()"
-                class="mb-3 w-full max-w-sm rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-hitachi focus:outline-none focus:ring-1 focus:ring-hitachi"
+        <!-- ============================= Vista: landing ============================= -->
+        <template x-if="view === 'landing'">
+          <div>
+            <section class="mb-6 rounded-xl border border-gray-200 p-5">
+              <h2 class="mb-1 text-sm font-semibold text-gray-900">Rendición rápida</h2>
+              <p class="mb-3 text-sm text-gray-500">
+                Cargá boletas sueltas y generá una rendición de una vez, sin crear una colección.
+              </p>
+              <button
+                @click="startQuickJob()"
+                class="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:border-hitachi hover:text-hitachi"
               >
-                <template x-for="candidate in (parseResult?.candidates_by_currency?.[currencyCode] ?? [])" :key="candidate.filename">
-                  <option
-                    :value="candidate.filename"
-                    x-text="candidate.filename + ' — ' + candidate.amount + ' ' + currencyCode + (candidate.date ? ' — ' + candidate.date : '')"
-                  ></option>
+                Nueva rendición rápida
+              </button>
+            </section>
+
+            <section class="mb-6 rounded-xl border border-gray-200 p-5">
+              <h2 class="mb-3 text-sm font-semibold text-gray-900">Nueva colección</h2>
+              <p class="mb-3 text-sm text-gray-500">
+                Creá una colección para ir subiendo boletas a medida que las recibís, y generá la rendición cuando quieras — la colección queda disponible para seguir agregando o volver a generar.
+              </p>
+              <div class="flex gap-2">
+                <input
+                  type="text"
+                  x-model="newCollectionName"
+                  @keydown.enter="createCollection()"
+                  placeholder="ej. Gastos Viaje Peru Julio 2026"
+                  class="w-full max-w-sm rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-hitachi focus:outline-none focus:ring-1 focus:ring-hitachi"
+                />
+                <button
+                  @click="createCollection()"
+                  :disabled="!newCollectionName.trim() || creatingCollection"
+                  class="rounded-lg bg-hitachi px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
+                >
+                  Crear
+                </button>
+              </div>
+            </section>
+
+            <section class="mb-6 rounded-xl border border-gray-200 p-5">
+              <h2 class="mb-3 text-sm font-semibold text-gray-900">Tus colecciones</h2>
+              <p class="text-sm text-gray-500" x-show="!loadingCollections && !collections.length" x-cloak>
+                Todavía no creaste ninguna colección.
+              </p>
+              <ul class="divide-y divide-gray-100" x-show="collections.length" x-cloak>
+                <template x-for="c in collections" :key="c.slug">
+                  <li
+                    @click="openCollection(c.slug)"
+                    class="flex cursor-pointer items-center justify-between py-3 text-sm hover:text-hitachi"
+                  >
+                    <div>
+                      <div class="font-medium text-gray-800" x-text="c.name"></div>
+                      <div class="text-xs text-gray-500">
+                        <span x-text="c.n_receipts"></span> boleta(s)
+                        <span x-show="c.last_generated_at"> · última rendición generada</span>
+                      </div>
+                    </div>
+                    <span class="text-gray-300" aria-hidden="true">→</span>
+                  </li>
                 </template>
-              </select>
+              </ul>
+            </section>
+          </div>
+        </template>
+
+        <!-- ======================= Vista: detalle de colección ======================= -->
+        <template x-if="view === 'collection-detail' && activeCollection">
+          <div>
+            <section class="mb-6 rounded-xl border border-gray-200 p-5">
+              <h2 class="mb-3 text-sm font-semibold text-gray-900">Boletas</h2>
+
+              <div
+                @dragover.prevent="collectionDragOver = true"
+                @dragleave.prevent="collectionDragOver = false"
+                @drop.prevent="onCollectionFileDrop($event)"
+                @click="$refs.collectionFileInput.click()"
+                class="cursor-pointer rounded-xl border-2 border-dashed px-6 py-10 text-center transition-colors"
+                :class="collectionDragOver ? 'border-hitachi bg-hitachi/5' : 'border-gray-300 hover:border-gray-400'"
+              >
+                <p class="text-sm font-medium text-gray-700">Arrastra las boletas aquí</p>
+                <p class="mt-1 text-xs text-gray-500">o hacé clic para elegir archivos — jpg, png, pdf</p>
+                <input
+                  x-ref="collectionFileInput"
+                  type="file"
+                  multiple
+                  accept=".jpg,.jpeg,.png,.pdf"
+                  class="hidden"
+                  @change="onCollectionFileInput($event)"
+                />
+              </div>
+
+              <input
+                x-ref="replaceInput"
+                type="file"
+                accept=".jpg,.jpeg,.png,.pdf"
+                class="hidden"
+                @change="onReplaceFileChosen($event)"
+              />
+
+              <p class="mt-4 text-xs text-gray-400" x-show="activeCollection.receipts.length" x-cloak>
+                El nombre queda en la columna Comments del Excel — editalo para que se entienda de un vistazo.
+              </p>
+              <ul class="mt-1 divide-y divide-gray-100" x-show="activeCollection.receipts.length" x-cloak>
+                <template x-for="name in activeCollection.receipts" :key="name">
+                  <li class="flex items-center justify-between gap-3 py-2 text-sm">
+                    <div class="flex min-w-0 flex-1 items-center">
+                      <input
+                        type="text"
+                        :value="stemOf(name)"
+                        @blur="renameCollectionReceipt(name, $event.target.value)"
+                        @keydown.enter="$event.target.blur()"
+                        class="min-w-0 flex-1 truncate rounded border border-transparent bg-transparent px-1.5 py-1 text-gray-700 hover:border-gray-200 focus:border-hitachi focus:outline-none focus:ring-1 focus:ring-hitachi"
+                      />
+                      <span class="shrink-0 text-gray-400" x-text="extOf(name)"></span>
+                    </div>
+                    <span class="flex shrink-0 gap-3">
+                      <button @click="triggerReplace(name)" class="text-xs font-medium text-gray-400 hover:text-hitachi">
+                        Reemplazar
+                      </button>
+                      <button @click="removeCollectionReceipt(name)" class="text-xs font-medium text-gray-400 hover:text-hitachi">
+                        Quitar
+                      </button>
+                    </span>
+                  </li>
+                </template>
+              </ul>
+            </section>
+
+            <div class="mb-10 flex items-center gap-4">
+              <button
+                @click="startGenerateFromCollection()"
+                :disabled="!activeCollection.receipts.length"
+                class="rounded-lg bg-hitachi px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-30"
+              >
+                Generar rendición
+              </button>
+            </div>
+          </div>
+        </template>
+
+        <!-- ============================ Vista: workspace ============================ -->
+        <template x-if="view === 'workspace'">
+          <div>
+            <!-- API key -->
+            <section x-show="hasApiKey === false || changingApiKey" x-cloak class="mb-6 rounded-xl border border-gray-200 p-5">
+              <h2 class="mb-1 text-sm font-semibold text-gray-900">API key de Anthropic</h2>
+              <p class="mb-3 text-sm text-gray-500" x-show="hasApiKey === false">
+                No se encontró una key guardada. Se guarda localmente en <code class="text-xs">secrets.yaml</code>
+                (nunca se sube a git).
+              </p>
+              <p class="mb-3 text-sm text-gray-500" x-show="hasApiKey === true" x-cloak>
+                Vas a reemplazar la key guardada en <code class="text-xs">secrets.yaml</code>.
+              </p>
+              <div class="flex gap-2">
+                <input
+                  type="password"
+                  x-model="apiKeyInput"
+                  placeholder="sk-ant-..."
+                  class="w-full max-w-sm rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-hitachi focus:outline-none focus:ring-1 focus:ring-hitachi"
+                />
+                <button
+                  @click="saveApiKey()"
+                  :disabled="!apiKeyInput || savingApiKey"
+                  class="rounded-lg bg-hitachi px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
+                >
+                  Guardar
+                </button>
+                <button
+                  x-show="hasApiKey === true"
+                  x-cloak
+                  @click="changingApiKey = false; apiKeyInput = ''"
+                  class="rounded-lg px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </section>
+
+            <div x-show="hasApiKey === true && !changingApiKey" x-cloak class="mb-6 -mt-4">
+              <button @click="changingApiKey = true" class="text-xs font-medium text-gray-400 hover:text-hitachi">
+                Cambiar API key
+              </button>
+            </div>
+
+            <!-- Boletas -->
+            <section class="mb-6 rounded-xl border border-gray-200 p-5">
+              <h2 class="mb-3 text-sm font-semibold text-gray-900">Boletas</h2>
+
+              <div
+                @dragover.prevent="dragOver = true"
+                @dragleave.prevent="dragOver = false"
+                @drop.prevent="onFileDrop($event)"
+                @click="$refs.fileInput.click()"
+                class="cursor-pointer rounded-xl border-2 border-dashed px-6 py-10 text-center transition-colors"
+                :class="dragOver ? 'border-hitachi bg-hitachi/5' : 'border-gray-300 hover:border-gray-400'"
+              >
+                <p class="text-sm font-medium text-gray-700">Arrastra las boletas aquí</p>
+                <p class="mt-1 text-xs text-gray-500">o hacé clic para elegir archivos — jpg, png, pdf</p>
+                <input
+                  x-ref="fileInput"
+                  type="file"
+                  multiple
+                  accept=".jpg,.jpeg,.png,.pdf"
+                  class="hidden"
+                  @change="onFileInput($event)"
+                />
+              </div>
+
+              <p class="mt-4 text-xs text-gray-400" x-show="files.length" x-cloak>
+                El nombre queda en la columna Comments del Excel — editalo para que se entienda de un vistazo.
+              </p>
+              <ul class="mt-1 divide-y divide-gray-100" x-show="files.length" x-cloak>
+                <template x-for="name in files" :key="name">
+                  <li class="flex items-center justify-between gap-3 py-2 text-sm">
+                    <div class="flex min-w-0 flex-1 items-center">
+                      <input
+                        type="text"
+                        :value="stemOf(name)"
+                        @blur="renameFile(name, $event.target.value)"
+                        @keydown.enter="$event.target.blur()"
+                        class="min-w-0 flex-1 truncate rounded border border-transparent bg-transparent px-1.5 py-1 text-gray-700 hover:border-gray-200 focus:border-hitachi focus:outline-none focus:ring-1 focus:ring-hitachi"
+                      />
+                      <span class="shrink-0 text-gray-400" x-text="extOf(name)"></span>
+                    </div>
+                    <button @click="removeFile(name)" class="shrink-0 text-xs font-medium text-gray-400 hover:text-hitachi">
+                      Quitar
+                    </button>
+                  </li>
+                </template>
+              </ul>
+            </section>
+
+            <!-- Datos del reporte -->
+            <section class="mb-6 rounded-xl border border-gray-200 p-5">
+              <h2 class="mb-3 text-sm font-semibold text-gray-900">Datos del reporte</h2>
+              <label class="mb-1 block text-xs font-medium uppercase tracking-wide text-gray-500">
+                Descripción del reporte (nombre del archivo)
+              </label>
+              <input
+                type="text"
+                x-model="description"
+                @input.debounce.400ms="checkReady()"
+                placeholder="ej. viaje-lima-junio"
+                class="w-full max-w-sm rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-hitachi focus:outline-none focus:ring-1 focus:ring-hitachi"
+              />
+
+              <button
+                @click="parseReceipts()"
+                :disabled="!files.length || parsing || hasApiKey === false"
+                class="mt-4 rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:border-hitachi hover:text-hitachi disabled:opacity-40"
+              >
+                <span x-show="!parsing">Procesar boletas</span>
+                <span x-show="parsing" x-cloak>Procesando…</span>
+              </button>
+
+              <div x-show="parsing" x-cloak class="mt-4">
+                <div class="mb-1.5 flex items-center justify-between text-xs text-gray-500">
+                  <span class="truncate pr-4" x-text="parseProgress.current_file ? ('Procesando ' + parseProgress.current_file + '…') : 'Procesando…'"></span>
+                  <span class="shrink-0 font-medium text-gray-700" x-text="parseProgress.done + '/' + parseProgress.total + ' boletas procesadas'"></span>
+                </div>
+                <div class="h-2 w-full overflow-hidden rounded-full bg-gray-100">
+                  <div
+                    class="h-full rounded-full bg-hitachi transition-all duration-300 ease-out"
+                    :style="'width: ' + (parseProgress.total ? Math.round((parseProgress.done / parseProgress.total) * 100) : 0) + '%'"
+                  ></div>
+                </div>
+              </div>
+            </section>
+
+            <!-- Resultado del parseo -->
+            <section x-show="parsed" x-cloak class="mb-6">
+              <div class="grid grid-cols-3 gap-4">
+                <div class="rounded-xl border border-gray-200 p-4">
+                  <div class="mb-3 flex h-9 w-9 items-center justify-center rounded-lg bg-gray-100">
+                    <span class="h-2.5 w-2.5 rounded-full bg-gray-400"></span>
+                  </div>
+                  <div class="text-2xl font-bold text-gray-900" x-text="parseResult?.n_total ?? 0"></div>
+                  <div class="text-xs text-gray-500">Boletas totales</div>
+                </div>
+                <div class="rounded-xl border border-gray-200 p-4">
+                  <div class="mb-3 flex h-9 w-9 items-center justify-center rounded-lg bg-gray-100">
+                    <span class="h-2.5 w-2.5 rounded-full bg-emerald-500"></span>
+                  </div>
+                  <div class="text-2xl font-bold text-gray-900" x-text="parseResult?.n_ok ?? 0"></div>
+                  <div class="text-xs text-gray-500">OK</div>
+                </div>
+                <div class="rounded-xl border border-gray-200 p-4">
+                  <div class="mb-3 flex h-9 w-9 items-center justify-center rounded-lg bg-gray-100">
+                    <span class="h-2.5 w-2.5 rounded-full bg-hitachi"></span>
+                  </div>
+                  <div class="text-2xl font-bold text-gray-900" x-text="parseResult?.n_review ?? 0"></div>
+                  <div class="text-xs text-gray-500">Para revisión</div>
+                </div>
+              </div>
+            </section>
+
+            <!-- Tipo de cambio -->
+            <section
+              x-show="parsed && parseResult && parseResult.needs_usd_fx"
+              x-cloak
+              class="mb-6 rounded-xl border border-gray-200 p-5"
+            >
+              <h2 class="mb-3 text-sm font-semibold text-gray-900">Tipo de cambio</h2>
 
               <label class="mb-1 block text-xs font-medium uppercase tracking-wide text-gray-500">
-                USD que cobró el banco por esa compra
+                USD -&gt; CLP (según tu banco)
               </label>
               <input
                 type="number"
                 step="0.01"
-                x-model.number="conversionSelections[currencyCode].usd_charged"
+                x-model.number="usdFx"
                 @input.debounce.400ms="checkReady()"
-                placeholder="67.41"
+                placeholder="922"
                 class="w-40 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-hitachi focus:outline-none focus:ring-1 focus:ring-hitachi"
               />
+
+              <template x-for="currencyCode in (parseResult?.conversion_currencies ?? [])" :key="currencyCode">
+                <div class="mt-5 border-t border-gray-100 pt-4">
+                  <div class="mb-2 text-sm font-medium text-gray-800" x-text="'FX real: ' + currencyCode + ' -> CLP'"></div>
+
+                  <label class="mb-1 block text-xs font-medium uppercase tracking-wide text-gray-500">
+                    Boleta en <span x-text="currencyCode"></span> a usar
+                  </label>
+                  <select
+                    x-model="conversionSelections[currencyCode].filename"
+                    @change="checkReady()"
+                    class="mb-3 w-full max-w-sm rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-hitachi focus:outline-none focus:ring-1 focus:ring-hitachi"
+                  >
+                    <template x-for="candidate in (parseResult?.candidates_by_currency?.[currencyCode] ?? [])" :key="candidate.filename">
+                      <option
+                        :value="candidate.filename"
+                        x-text="candidate.filename + ' — ' + candidate.amount + ' ' + currencyCode + (candidate.date ? ' — ' + candidate.date : '')"
+                      ></option>
+                    </template>
+                  </select>
+
+                  <label class="mb-1 block text-xs font-medium uppercase tracking-wide text-gray-500">
+                    USD que cobró el banco por esa compra
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    x-model.number="conversionSelections[currencyCode].usd_charged"
+                    @input.debounce.400ms="checkReady()"
+                    placeholder="67.41"
+                    class="w-40 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-hitachi focus:outline-none focus:ring-1 focus:ring-hitachi"
+                  />
+                </div>
+              </template>
+            </section>
+
+            <!-- Requisitos pendientes -->
+            <ul
+              x-show="parsed && missing.length"
+              x-cloak
+              class="mb-6 list-inside list-disc rounded-lg bg-gray-50 px-4 py-3 text-xs text-gray-500"
+            >
+              <template x-for="m in missing" :key="m">
+                <li x-text="m"></li>
+              </template>
+            </ul>
+
+            <!-- Generar -->
+            <div class="mb-10 flex items-center gap-4">
+              <button
+                @click="generate()"
+                :disabled="!ready || generating"
+                class="rounded-lg bg-hitachi px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-30"
+              >
+                <span x-show="!generating">Crear rendición</span>
+                <span x-show="generating" x-cloak>Generando…</span>
+              </button>
             </div>
-          </template>
-        </section>
 
-        <!-- Requisitos pendientes -->
-        <ul
-          x-show="parsed && missing.length"
-          x-cloak
-          class="mb-6 list-inside list-disc rounded-lg bg-gray-50 px-4 py-3 text-xs text-gray-500"
-        >
-          <template x-for="m in missing" :key="m">
-            <li x-text="m"></li>
-          </template>
-        </ul>
+            <!-- Resultado -->
+            <section x-show="generateResult" x-cloak class="mb-10 rounded-xl border border-gray-200 p-5">
+              <h2 class="mb-3 text-sm font-semibold text-gray-900">Rendición generada</h2>
 
-        <!-- Generar -->
-        <div class="mb-10 flex items-center gap-4">
-          <button
-            @click="generate()"
-            :disabled="!ready || generating"
-            class="rounded-lg bg-hitachi px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-30"
-          >
-            <span x-show="!generating">Crear rendición</span>
-            <span x-show="generating" x-cloak>Generando…</span>
-          </button>
-        </div>
+              <div class="mb-4 flex flex-wrap gap-3">
+                <a
+                  :href="generateResult?.report_url"
+                  class="rounded-lg bg-hitachi px-4 py-2 text-sm font-medium text-white"
+                  download
+                >
+                  Descargar Excel de rendición
+                </a>
+                <a
+                  x-show="generateResult?.audit_url"
+                  :href="generateResult?.audit_url"
+                  class="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700"
+                  download
+                >
+                  Descargar auditoría
+                </a>
+              </div>
 
-        <!-- Resultado -->
-        <section x-show="generateResult" x-cloak class="mb-10 rounded-xl border border-gray-200 p-5">
-          <h2 class="mb-3 text-sm font-semibold text-gray-900">Rendición generada</h2>
-
-          <div class="mb-4 flex flex-wrap gap-3">
-            <a
-              :href="generateResult?.report_url"
-              class="rounded-lg bg-hitachi px-4 py-2 text-sm font-medium text-white"
-              download
-            >
-              Descargar Excel de rendición
-            </a>
-            <a
-              x-show="generateResult?.audit_url"
-              :href="generateResult?.audit_url"
-              class="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700"
-              download
-            >
-              Descargar auditoría
-            </a>
+              <pre
+                class="overflow-x-auto rounded-lg bg-gray-50 px-4 py-3 text-xs leading-relaxed text-gray-600"
+                x-text="generateResult?.usage?.summary_text"
+              ></pre>
+            </section>
           </div>
-
-          <pre
-            class="overflow-x-auto rounded-lg bg-gray-50 px-4 py-3 text-xs leading-relaxed text-gray-600"
-            x-text="generateResult?.usage?.summary_text"
-          ></pre>
-        </section>
+        </template>
       </div>
     </main>
   </div>

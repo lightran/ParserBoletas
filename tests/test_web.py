@@ -16,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main
+import receipt_collections
 from extract import ExtractionResult
 from web import routes
 
@@ -25,6 +26,14 @@ def _isolated_secrets(tmp_path, monkeypatch):
     # Evita depender del secrets.yaml / ANTHROPIC_API_KEY real de la máquina.
     monkeypatch.setattr(routes, "SECRETS_PATH", tmp_path / "secrets.yaml")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_collections_root(tmp_path, monkeypatch):
+    # Se redirige solo la raíz de colecciones/ (no paths.PROJECT_ROOT entero, que
+    # también resuelve el bundle de solo lectura vía resource_path() — plantilla
+    # Excel incluida — y romperlo ahí tira abajo tests que no tocan colecciones).
+    monkeypatch.setattr(receipt_collections, "_collections_root", lambda: tmp_path / "colecciones")
 
 
 @pytest.fixture
@@ -147,6 +156,38 @@ def test_remove_receipt(client):
 
 def test_upload_unknown_job_returns_404(client):
     r = _upload(client, "does-not-exist", ["a.jpg"])
+    assert r.status_code == 404
+
+
+def test_rename_receipt_changes_name_and_resets_parse_state(client, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "env-token")
+    job_id = _create_job(client)
+    _upload(client, job_id, ["IMG_20260615.jpg"])
+    _mock_results(monkeypatch, {"IMG_20260615.jpg": _make_ok_result(currency="PEN", amount=100.0)})
+    _parse_and_wait(client, job_id)
+
+    r = client.patch(
+        f"/api/jobs/{job_id}/receipts/IMG_20260615.jpg",
+        json={"new_name": "Almuerzo cliente X"},
+    )
+    assert r.status_code == 200
+    assert r.json()["files"] == ["Almuerzo_cliente_X.jpg"]
+
+    # Renombrar invalida el parseo anterior, igual que subir/quitar una boleta.
+    status = client.get(f"/api/jobs/{job_id}/parse/status").json()
+    assert status["status"] == "idle"
+
+
+def test_rename_receipt_rejects_collision(client):
+    job_id = _create_job(client)
+    _upload(client, job_id, ["a.jpg", "b.jpg"])
+    r = client.patch(f"/api/jobs/{job_id}/receipts/a.jpg", json={"new_name": "b"})
+    assert r.status_code == 409
+
+
+def test_rename_receipt_unknown_file_returns_404(client):
+    job_id = _create_job(client)
+    r = client.patch(f"/api/jobs/{job_id}/receipts/no-existe.jpg", json={"new_name": "x"})
     assert r.status_code == 404
 
 
@@ -409,3 +450,212 @@ def test_ensure_default_config_does_not_overwrite_existing_file(tmp_path, monkey
     routes._ensure_default_config()
 
     assert fake_writable.read_text(encoding="utf-8") == "custom: true\n"
+
+
+# --- colecciones -----------------------------------------------------------------
+
+
+def test_create_and_list_collections(client):
+    r = client.post("/api/collections", json={"name": "Gastos Viaje Peru Julio 2026"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["slug"] == "Gastos_Viaje_Peru_Julio_2026"
+    assert data["name"] == "Gastos Viaje Peru Julio 2026"
+    assert data["n_receipts"] == 0
+
+    r = client.get("/api/collections")
+    assert [c["slug"] for c in r.json()] == ["Gastos_Viaje_Peru_Julio_2026"]
+
+
+def test_create_collection_duplicate_name_returns_409(client):
+    client.post("/api/collections", json={"name": "Viaje Lima"})
+    r = client.post("/api/collections", json={"name": "Viaje Lima"})
+    assert r.status_code == 409
+
+
+def test_create_collection_blank_name_returns_400(client):
+    r = client.post("/api/collections", json={"name": "   "})
+    assert r.status_code == 400
+
+
+def test_get_unknown_collection_returns_404(client):
+    r = client.get("/api/collections/no-existe")
+    assert r.status_code == 404
+
+
+def test_upload_list_and_get_collection_receipts(client):
+    slug = client.post("/api/collections", json={"name": "Viaje Lima"}).json()["slug"]
+
+    r = client.post(
+        f"/api/collections/{slug}/receipts",
+        files=[
+            ("files", ("a.jpg", io.BytesIO(b"x"), "image/jpeg")),
+            ("files", ("b.txt", io.BytesIO(b"x"), "text/plain")),
+        ],
+    )
+    data = r.json()
+    assert data["receipts"] == ["a.jpg"]
+    assert data["rejected"] == ["b.txt"]
+
+    detail = client.get(f"/api/collections/{slug}").json()
+    assert detail["receipts"] == ["a.jpg"]
+    assert detail["n_receipts"] == 1
+
+
+def test_delete_collection_receipt(client):
+    slug = client.post("/api/collections", json={"name": "Viaje Lima"}).json()["slug"]
+    client.post(
+        f"/api/collections/{slug}/receipts",
+        files=[("files", ("a.jpg", io.BytesIO(b"x"), "image/jpeg"))],
+    )
+
+    r = client.delete(f"/api/collections/{slug}/receipts/a.jpg")
+    assert r.json()["receipts"] == []
+
+
+def test_replace_collection_receipt(client):
+    slug = client.post("/api/collections", json={"name": "Viaje Lima"}).json()["slug"]
+    client.post(
+        f"/api/collections/{slug}/receipts",
+        files=[("files", ("borrosa.jpg", io.BytesIO(b"vieja"), "image/jpeg"))],
+    )
+
+    r = client.put(
+        f"/api/collections/{slug}/receipts/borrosa.jpg",
+        files={"file": ("nitida.jpg", io.BytesIO(b"nueva"), "image/jpeg")},
+    )
+    assert r.json()["receipts"] == ["nitida.jpg"]
+
+
+def test_replace_collection_receipt_rejects_unsupported_extension(client):
+    slug = client.post("/api/collections", json={"name": "Viaje Lima"}).json()["slug"]
+    client.post(
+        f"/api/collections/{slug}/receipts",
+        files=[("files", ("a.jpg", io.BytesIO(b"x"), "image/jpeg"))],
+    )
+
+    r = client.put(
+        f"/api/collections/{slug}/receipts/a.jpg",
+        files={"file": ("a.txt", io.BytesIO(b"x"), "text/plain")},
+    )
+    assert r.status_code == 400
+
+
+def test_rename_collection_receipt(client):
+    slug = client.post("/api/collections", json={"name": "Viaje Lima"}).json()["slug"]
+    client.post(
+        f"/api/collections/{slug}/receipts",
+        files=[("files", ("IMG_20260615.jpg", io.BytesIO(b"foto"), "image/jpeg"))],
+    )
+
+    r = client.patch(
+        f"/api/collections/{slug}/receipts/IMG_20260615.jpg",
+        json={"new_name": "Almuerzo cliente X"},
+    )
+    assert r.status_code == 200
+    assert r.json()["receipts"] == ["Almuerzo_cliente_X.jpg"]
+
+    detail = client.get(f"/api/collections/{slug}").json()
+    assert detail["receipts"] == ["Almuerzo_cliente_X.jpg"]
+
+
+def test_rename_collection_receipt_rejects_collision(client):
+    slug = client.post("/api/collections", json={"name": "Viaje Lima"}).json()["slug"]
+    client.post(
+        f"/api/collections/{slug}/receipts",
+        files=[
+            ("files", ("a.jpg", io.BytesIO(b"x"), "image/jpeg")),
+            ("files", ("b.jpg", io.BytesIO(b"y"), "image/jpeg")),
+        ],
+    )
+
+    r = client.patch(f"/api/collections/{slug}/receipts/a.jpg", json={"new_name": "b"})
+    assert r.status_code == 409
+
+
+def test_rename_collection_receipt_unknown_file_returns_404(client):
+    slug = client.post("/api/collections", json={"name": "Viaje Lima"}).json()["slug"]
+    r = client.patch(f"/api/collections/{slug}/receipts/no-existe.jpg", json={"new_name": "x"})
+    assert r.status_code == 404
+
+
+# --- generar rendición desde una colección (reusa el flujo de Job existente) ----
+
+
+def test_generate_job_from_collection_seeds_files_and_description(client):
+    slug = client.post("/api/collections", json={"name": "Viaje Lima Junio"}).json()["slug"]
+    client.post(
+        f"/api/collections/{slug}/receipts",
+        files=[("files", ("a.jpg", io.BytesIO(b"x"), "image/jpeg"))],
+    )
+
+    r = client.post(f"/api/collections/{slug}/generate-job")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["collection_name"] == "Viaje Lima Junio"
+    assert data["files"] == ["a.jpg"]
+
+    # El job creado ya reutiliza el mismo endpoint de siempre — no hace falta
+    # volver a subir nada: las boletas de la colección ya están ahí.
+    job = routes.store.get(data["job_id"])
+    assert job.upload_dir == routes.receipt_collections.boletas_dir(slug)
+    assert [p.name for p in job.files] == ["a.jpg"]
+
+
+def test_generate_job_from_unknown_collection_returns_404(client):
+    r = client.post("/api/collections/no-existe/generate-job")
+    assert r.status_code == 404
+
+
+def test_generate_from_collection_writes_report_inside_collection_and_marks_generated(
+    client, monkeypatch
+):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "env-token")
+    slug = client.post("/api/collections", json={"name": "Viaje Lima"}).json()["slug"]
+    client.post(
+        f"/api/collections/{slug}/receipts",
+        files=[("files", ("pen.jpg", io.BytesIO(b"x"), "image/jpeg"))],
+    )
+    job_id = client.post(f"/api/collections/{slug}/generate-job").json()["job_id"]
+
+    _mock_results(monkeypatch, {"pen.jpg": _make_ok_result(currency="CLP", amount=33200.0)})
+    _parse_and_wait(client, job_id)
+
+    r = client.post(f"/api/jobs/{job_id}/generate", json={"description": "viaje lima"})
+    assert r.status_code == 200
+    report_url = r.json()["report_url"]
+
+    dl = client.get(report_url)
+    assert dl.status_code == 200
+
+    # El Excel quedó dentro de la carpeta de la colección, no en un temp descartable.
+    rendiciones_dir = routes.receipt_collections.rendiciones_dir(slug)
+    assert (rendiciones_dir / "Expense_Report_viaje_lima.xlsx").exists()
+
+    # La colección sigue intacta (no se archiva ni se borra) y quedó marcada como generada.
+    detail = client.get(f"/api/collections/{slug}").json()
+    assert detail["receipts"] == ["pen.jpg"]
+    assert detail["last_generated_at"] is not None
+
+
+def test_collection_survives_after_generating_and_can_add_more_receipts(client, monkeypatch):
+    # Cubre explícitamente "la colección se conserva tal cual: se puede volver a
+    # generar o seguir agregando boletas" después de una generación.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "env-token")
+    slug = client.post("/api/collections", json={"name": "Viaje Lima"}).json()["slug"]
+    client.post(
+        f"/api/collections/{slug}/receipts",
+        files=[("files", ("a.jpg", io.BytesIO(b"x"), "image/jpeg"))],
+    )
+    job_id = client.post(f"/api/collections/{slug}/generate-job").json()["job_id"]
+    _mock_results(monkeypatch, {"a.jpg": _make_ok_result(currency="CLP", amount=1000.0)})
+    _parse_and_wait(client, job_id)
+    client.post(f"/api/jobs/{job_id}/generate", json={"description": "primera"})
+
+    # Sigue existiendo, y se le puede agregar otra boleta para una futura corrida.
+    client.post(
+        f"/api/collections/{slug}/receipts",
+        files=[("files", ("b.jpg", io.BytesIO(b"x"), "image/jpeg"))],
+    )
+    detail = client.get(f"/api/collections/{slug}").json()
+    assert sorted(detail["receipts"]) == ["a.jpg", "b.jpg"]

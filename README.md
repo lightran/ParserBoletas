@@ -236,7 +236,10 @@ Flujo en la página:
    `ANTHROPIC_API_KEY`), la página pide un campo tipo password y la guarda con el mismo
    criterio que la CLI (texto plano en `secrets.yaml`, gitignoreado).
 2. **Cargar boletas**: arrastrar y soltar (o elegir archivos) jpg/png/pdf. Se puede
-   quitar un archivo de la lista antes de procesar.
+   quitar un archivo de la lista antes de procesar, y renombrarlo (el nombre sin
+   extensión es editable ahí mismo) — ese nombre es el que va a terminar en la columna
+   Comments del Excel, así que conviene que diga algo más útil que el nombre que le
+   puso la cámara/el teléfono.
 3. **Descripción del reporte** (para el nombre del archivo de salida) y botón
    **"Procesar boletas"** — corre la extracción sobre lo cargado y detecta qué monedas
    no-CLP aparecen.
@@ -251,6 +254,32 @@ Flujo en la página:
 
 No reemplaza la CLI — `python src/main.py boletas/ ...` sigue funcionando igual, para
 scripting o CI.
+
+### Colecciones
+
+Para viajes donde vas juntando boletas de a poco (no todas de una vez): al abrir la
+página, además de "Nueva rendición rápida" (el flujo de arriba) tenés **Colecciones**.
+
+1. **Crear una colección**, con un nombre (ej. "Gastos Viaje Peru Julio 2026").
+2. **Ir agregando boletas** a la colección cuando las vayas recibiendo — arrastrar y
+   soltar, en tantas sesiones como quieras. También podés **quitar** una boleta mal
+   cargada, **reemplazarla** por otra (borra la anterior y sube la nueva en un solo
+   paso), o **renombrarla**: el nombre de archivo (sin la extensión) es editable ahí
+   mismo, en la lista — conviene cambiarlo de algo como `IMG_20260615_142033.jpg` a
+   algo como `Almuerzo cliente X`, porque ese nombre es justo lo que va a terminar en
+   la columna Comments del Excel de rendición. Nada se procesa todavía en este punto —
+   la extracción por visión solo pasa al generar.
+3. Cuando decidís rendir, **"Generar rendición"** dentro de la colección arranca el
+   mismo flujo de siempre (Procesar → Tipo de cambio → Crear rendición), ya con las
+   boletas de la colección cargadas y la descripción del reporte precargada con el
+   nombre de la colección (editable).
+4. **Después de generar, la colección queda igual que estaba** — no se archiva ni se
+   borra. Podés seguir agregando boletas o volver a generar cuando quieras.
+
+Cada colección se guarda en una carpeta persistente (`colecciones/<nombre>/`, junto al
+`.exe` si corrés la versión empaquetada) — sobrevive a cerrar la página, cerrar el
+servidor, o reiniciar la máquina. Los Excel generados quedan dentro de esa misma
+carpeta (`colecciones/<nombre>/rendiciones/`), no en el `output/` general.
 
 ## Empaquetar como ejecutable de Windows
 
@@ -508,12 +537,14 @@ ParserBoletas/
     api_key.py        # resuelve/guarda la API key (env var > secrets.yaml > prompt)
     main.py           # orquesta el pipeline sobre una carpeta (CLI) + helpers compartidos con la web
     paths.py           # resource_path()/writable_path() — recursos bundleados vs. escribibles (PyInstaller)
+    receipt_collections.py  # colecciones: boletas persistentes por carpeta (colecciones/<nombre>/)
     web/
       routes.py       # endpoints FastAPI — fachada sobre la misma lógica de main.py
       state.py        # sesiones ("jobs") en memoria: boletas subidas + resultados intermedios
       templates/index.html  # página única (Tailwind CDN + Alpine.js, sin build de Node)
       static/         # app.css, app.js
   tests/              # pytest, con casos armados a partir de boletas reales
+  colecciones/        # colecciones creadas por el usuario (persistente, en .gitignore)
   config.yaml         # parámetros calibrables (nunca secretos)
   secrets.yaml        # API key en texto plano — generado localmente, en .gitignore
   requirements.txt        # dependencias de runtime
@@ -594,6 +625,22 @@ la raíz del repo en desarrollo y junto al `.exe` empaquetado. Y en `tests/test_
 que `excel.template_path` se resuelva a una ruta absoluta existente, y que
 `config.yaml` se siembre desde el bundleado solo si no existe ya en la ubicación
 escribible (sin pisar ediciones del usuario).
+
+`src/receipt_collections.py` (`tests/test_receipt_collections.py`): crear una
+colección (carpeta + metadata, nombre visible con espacios/acentos vs. nombre de
+carpeta saneado), rechazo de nombre vacío y de colección duplicada, listar/abrir
+colecciones, agregar/quitar/reemplazar/renombrar boletas (renombrar preserva la
+extensión y el contenido, sanea el nombre nuevo, y rechaza colisión con otra boleta
+existente), y que los datos persistan releyendo del disco sin nada en memoria
+(reproduce reabrir la colección después de cerrar la página o el servidor). Y en
+`tests/test_web.py`: los mismos endpoints vía HTTP (para colecciones y, el de
+renombrar, también para el flujo de carga suelta — invalida el parseo anterior igual
+que subir/quitar una boleta), más el flujo completo de generar desde una colección —
+el job creado ya trae las boletas de la colección cargadas (sin subir nada de nuevo) y
+la descripción precargada con el nombre de la colección, el Excel generado queda
+dentro de `colecciones/<nombre>/rendiciones/` (no en un temporal descartable), y la
+colección sigue existiendo con sus boletas después de generar (se le puede seguir
+agregando más).
 
 ## Fuera de alcance en v1
 

@@ -5,6 +5,10 @@ venv/
 output/
 .env
 
+# Colecciones del usuario (boletas subidas progresivamente + rendiciones generadas,
+# ver src/receipt_collections.py) — datos locales, no versionados.
+colecciones/
+
 # Artefactos de PyInstaller (ver app.spec/build.bat) — generados, no versionados.
 # app.spec sí se versiona (es el build reproducible).
 build/

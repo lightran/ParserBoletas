@@ -42,6 +42,11 @@ class Job:
     # pueda hacer polling del progreso ("status" en idle | running | done | error).
     progress: dict = field(default_factory=_initial_progress)
     parse_payload: Optional[dict] = None
+    # Si este job se creó para generar la rendición de una colección (ver
+    # web.routes::create_generate_job), el slug de esa colección — para poder
+    # avisarle a receipt_collections que se generó (metadata.last_generated_at) al
+    # terminar POST /generate. None para el flujo de carga suelta de siempre.
+    collection_slug: Optional[str] = None
 
 
 class JobStore:
@@ -54,14 +59,39 @@ class JobStore:
         self._jobs: Dict[str, Job] = {}
         self._lock = threading.Lock()
 
-    def create(self) -> Job:
+    def create(
+        self,
+        upload_dir: Optional[Path] = None,
+        output_dir: Optional[Path] = None,
+        collection_slug: Optional[str] = None,
+    ) -> Job:
+        """Crea un job. Sin argumentos: flujo de carga suelta de siempre (dos
+        directorios temporales vacíos, borrados por `close()`). Con `upload_dir`/
+        `output_dir` (ver web.routes::create_generate_job, que los apunta a la
+        carpeta persistente de una colección): no crea el upload_dir —debe traer
+        boletas ya subidas—, solo lo escanea; el output_dir sí se crea si falta,
+        y vive fuera de `self._base_dir` así que `close()` no lo toca."""
         job_id = uuid.uuid4().hex
         job_dir = self._base_dir / job_id
-        upload_dir = job_dir / "uploads"
-        output_dir = job_dir / "output"
-        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        if upload_dir is None:
+            upload_dir = job_dir / "uploads"
+            upload_dir.mkdir(parents=True, exist_ok=True)
+        if output_dir is None:
+            output_dir = job_dir / "output"
         output_dir.mkdir(parents=True, exist_ok=True)
-        job = Job(id=job_id, upload_dir=upload_dir, output_dir=output_dir)
+
+        files = sorted(
+            p for p in upload_dir.iterdir() if p.suffix.lower() in main.SUPPORTED_SUFFIXES
+        ) if upload_dir.exists() else []
+
+        job = Job(
+            id=job_id,
+            upload_dir=upload_dir,
+            output_dir=output_dir,
+            files=files,
+            collection_slug=collection_slug,
+        )
         with self._lock:
             self._jobs[job_id] = job
         return job

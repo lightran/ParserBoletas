@@ -109,14 +109,21 @@ de implementar:
 - **Estado por sesión (`src/web/state.py::JobStore`)**: como el flujo web está partido
   en varias llamadas HTTP (subir → parsear → generar) en vez de una corrida bloqueante
   de consola, cada "job" (uuid4, sin autenticación — herramienta local de un solo
-  usuario) guarda en memoria del proceso las boletas subidas (en un directorio temporal
-  propio) y los resultados intermedios (`ProcessingSummary`, `FxRequirements`, rutas de
-  los Excel generados). No hay persistencia entre reinicios del proceso ni entre
-  procesos — se borra al apagar el servidor (`JobStore.close()` en el `lifespan` de
-  FastAPI).
+  usuario) guarda en memoria del proceso las boletas subidas y los resultados
+  intermedios (`ProcessingSummary`, `FxRequirements`, rutas de los Excel generados). En
+  el flujo de carga suelta, `upload_dir`/`output_dir` son directorios temporales
+  propios del job — no hay persistencia entre reinicios ni entre procesos, se borran al
+  apagar el servidor (`JobStore.close()` en el `lifespan` de FastAPI). **Excepción: un
+  job creado desde una colección** (`POST /api/collections/{slug}/generate-job`, ver
+  sección "Colecciones" abajo) tiene `upload_dir`/`output_dir` apuntando a la carpeta
+  persistente de esa colección en vez de a temporales — `JobStore.close()` nunca los
+  toca (viven fuera de `self._base_dir`), así que sobreviven al cierre del servidor
+  igual que el resto de la colección.
 - **Flujo por etapas** (dependencia real: las monedas y candidatos para el FX real solo
   se conocen después de parsear):
-  1. `POST /api/jobs` crea la sesión.
+  1. `POST /api/jobs` crea la sesión (flujo de carga suelta) — o, desde una colección,
+     `POST /api/collections/{slug}/generate-job` (ver "Colecciones" abajo), que crea el
+     mismo tipo de job pero ya con `files` poblado desde la carpeta de la colección.
   2. `POST /api/jobs/{id}/receipts` (multipart) sube boletas; rechaza extensiones fuera
      de `main.SUPPORTED_SUFFIXES`.
   3. `POST /api/jobs/{id}/parse` corre `process_all` + `detect_fx_requirements`;
@@ -128,11 +135,100 @@ de implementar:
      enviado (mismo `CurrencyConversion` que la CLI, sin pasar por consola), llama a
      `excel_writer.write_expense_report`/`audit_writer.write_audit_report`, y devuelve
      las URLs de descarga (`GET /api/jobs/{id}/download/{report|audit}`) más el mismo
-     resumen de costo que imprime la CLI (`cost.format_summary`, texto idéntico).
+     resumen de costo que imprime la CLI (`cost.format_summary`, texto idéntico). Si el
+     job viene de una colección (`job.collection_slug` seteado), además llama a
+     `receipt_collections.mark_generated` para actualizar `last_generated_at`.
 - **Token en contexto web**: `GET /api/config-status` chequea `api_key.has_saved_key`
   para que la página decida si mostrar el campo password; `POST /api/config/api-key`
   llama a `api_key.save_api_key` (mismo criterio de persistencia que la CLI, ver
   sección anterior).
+
+### Colecciones (`src/receipt_collections.py`)
+
+El usuario crea una colección y sube boletas progresivamente, en sesiones separadas,
+sin esperar a tenerlas todas — la extracción por visión sigue ocurriendo una sola vez,
+recién al generar la rendición (Opción A, acordada con el usuario antes de implementar:
+nunca se extrae al subir). Es una capa de persistencia y gestión de archivos
+**independiente** de `JobStore`; "generar rendición" desde una colección no reimplementa
+nada, arma un `Job` normal apuntado a la carpeta de la colección y de ahí en más
+reutiliza exactamente el mismo flujo de etapas de arriba (parse/validate/generate/
+download) — cero lógica de FX/generación duplicada.
+
+- **Persistencia en disco**, resuelta con `paths.writable_path("colecciones")` (junto
+  al ejecutable empaquetado, ver `src/paths.py`):
+  ```
+  colecciones/
+    <slug>/
+      coleccion.json   # nombre visible, fecha de creación, última generación
+      boletas/         # las imágenes/PDF subidos
+      rendiciones/     # Excel generados (creada recién al generar la primera vez)
+  ```
+  El nombre visible (con espacios/acentos) vive en `coleccion.json`; `slug` (nombre de
+  carpeta) es la versión saneada con `main.sanitize_filename_component` — mismo
+  criterio que ya usa la app para nombrar el Excel de salida, no uno nuevo.
+  `create_collection` lanza `CollectionAlreadyExistsError` si el slug ya existe.
+- **La lista de boletas NO se guarda en `coleccion.json`**, a propósito — se deriva
+  siempre en vivo listando `boletas/` (`list_receipts`/`get_collection`), para que
+  nunca pueda quedar desincronizada de lo que realmente hay en disco (ej. si el proceso
+  se interrumpe a mitad de una escritura de metadata). Es una simplificación respecto
+  al diseño original que el usuario propuso (que sí incluía la lista en la metadata);
+  el resultado visible para el usuario es idéntico.
+- **Gestión de boletas**: agregar (`add_receipt`), eliminar (`remove_receipt`),
+  reemplazar (`replace_receipt` = eliminar la anterior + agregar la nueva, en una sola
+  llamada — expuesto como `PUT /api/collections/{slug}/receipts/{filename}` con un
+  único archivo multipart) y **renombrar** (`rename_receipt`, `PATCH .../receipts/
+  {filename}`) — todas operan directo sobre `boletas/`, sin pasar por `JobStore`.
+- **Renombrar boletas (`rename_receipt`)**: el usuario solo edita la parte
+  descriptiva del nombre (sin extensión) — la extensión se preserva siempre, para que
+  no pueda cambiar el tipo de archivo sin querer (`Path.with_stem`, misma semántica de
+  "solo la última extensión" que `main.py::build_comments`). El nuevo nombre se sanea
+  con `main.sanitize_filename_component` (mismo criterio que el resto de la app);
+  lanza `FileExistsError` si colisiona con otra boleta ya presente. Existe porque el
+  nombre de archivo es justo lo que termina en la columna Comments del Excel — un
+  nombre de cámara tipo `IMG_20260615_142033.jpg` no dice nada, pero
+  `Almuerzo_cliente_X.jpg` sí. Hay un endpoint análogo para el flujo de carga suelta
+  (`PATCH /api/jobs/{id}/receipts/{filename}`, en `routes.py` directamente — no pasa
+  por `receipt_collections` porque `job.upload_dir` no es necesariamente la carpeta de
+  una colección), con el mismo saneo/preservación de extensión/manejo de colisión.
+  Ambos invalidan el parseo anterior (`_reset_parse_state`), igual que agregar/quitar
+  una boleta — el nombre pasó a ser distinto, así que `ExpenseRow.source_file`/
+  `file_path` de una corrida previa quedarían obsoletos.
+- **"Generar rendición" (`POST /api/collections/{slug}/generate-job`)**: crea un `Job`
+  vía `JobStore.create(upload_dir=..., output_dir=..., collection_slug=slug)` — extendí
+  `JobStore.create()` (antes sin argumentos) para aceptar `upload_dir`/`output_dir`
+  opcionales; si se pasan, no crea un `upload_dir` nuevo (ya tiene boletas) sino que
+  escanea el que le dieron para poblar `job.files` de entrada, y sí crea el
+  `output_dir` si falta (`rendiciones/` puede no existir todavía en una colección
+  nueva). Sin argumentos, el comportamiento es idéntico al de siempre (dos temporales
+  vacíos) — cambio aditivo, no rompe el flujo de carga suelta. La respuesta incluye
+  `collection_name` para que el frontend precargue la descripción del reporte
+  (editable) con el nombre de la colección.
+- **Dónde quedan los Excel generados**: dentro de la colección
+  (`colecciones/<slug>/rendiciones/Expense_Report_*.xlsx` + `auditoria.xlsx`), no en el
+  `output/` general de `config.yaml` — decisión explícita del usuario, para que cada
+  colección conserve su(s) rendición(es). Regenerar con la misma descripción
+  sobreescribe el archivo, igual que ya hace la CLI.
+- **Después de generar, la colección queda intacta**: no se archiva ni se borra — el
+  usuario puede seguir agregando boletas o volver a generar. No hay ningún paso que
+  limpie `boletas/` ni mueva la colección a otro lado.
+- **El módulo se llama `receipt_collections.py`, no `collections.py`**, a propósito
+  — ese nombre pisaría el módulo `collections` de la librería estándar de Python
+  (`import collections` es transitivamente usado en todo el proyecto vía FastAPI/
+  pydantic/etc.), rompiendo el proceso entero de forma no obvia.
+- **Frontend**: la SPA de siempre (`index.html`/`app.js`, sin build de Node) ahora
+  tiene tres vistas controladas por `view` en el estado de Alpine — `"landing"`
+  (listar/crear colecciones + botón de rendición rápida sin colección),
+  `"collection-detail"` (gestión de boletas de una colección + botón "Generar
+  rendición") y `"workspace"` (los mismos pasos 2-4 de siempre, sin tocar su lógica —
+  solo ahora `jobId`/`files`/`description` pueden llegar precargados desde
+  `startGenerateFromCollection()` en vez de arrancar vacíos). El flujo de carga suelta
+  original sigue disponible tal cual, como una opción más en `"landing"`
+  (`startQuickJob()`) — decisión explícita del usuario: colecciones no lo reemplazan.
+  En ambas listas de boletas (`"collection-detail"` y `"workspace"`), el nombre de
+  archivo se muestra como un `<input>` editable con la extensión aparte como texto fijo
+  (`stemOf`/`extOf` en `app.js`) — el usuario solo edita la parte descriptiva; el
+  cambio se manda al backend recién al perder el foco o Enter (`@blur`/
+  `@keydown.enter`, no en cada tecla, para no disparar un `PATCH` por letra).
 
 ## Empaquetado con PyInstaller (`app.spec`, `build.bat`, `src/paths.py`)
 
@@ -562,3 +658,36 @@ genera los archivos descargables correctos — incluyendo que la pestaña "Compl
 info" se elimine con solo CLP y se cree "Complementary info - PEN" con el FX real
 correcto cuando hay una conversión, y que una boleta para revisión deje
 `auditoria.xlsx` disponible para descargar.
+
+`src/receipt_collections.py` (`tests/test_receipt_collections.py`, redirigiendo
+`_collections_root()` a un `tmp_path` por test — nunca `paths.PROJECT_ROOT` entero,
+porque ese global también resuelve recursos de solo lectura vía `resource_path()` y
+pisarlo rompe tests no relacionados): creación de la carpeta + `coleccion.json`
+(nombre visible con espacios/acentos preservado, slug de carpeta saneado), rechazo de
+nombre vacío y de slug duplicado, listar colecciones (vacío al principio, todas las
+creadas), colección desconocida lanza `CollectionNotFoundError`, agregar/eliminar/
+reemplazar boleta (`replace_receipt` con nombre distinto y con el mismo nombre —
+sobrescribe contenido), eliminar un archivo que no existe es no-op, que los datos se
+leen siempre frescos de disco (releer sin nada en memoria reproduce "reabrir" la
+colección — no hay estado que perder entre reinicios), y `mark_generated` solo toca
+`last_generated_at`, no el nombre ni la fecha de creación. Y en `tests/test_web.py`
+(mismo patrón: `_collections_root()` redirigida a un `tmp_path` por test): crear/
+listar/ver colección vía HTTP, subir boletas (rechaza extensión no soportada igual
+que el upload de jobs), eliminar y reemplazar boleta (esta última rechaza extensión no
+soportada también), y el flujo completo de generar desde una colección —
+`POST /generate-job` arma un job con `job.files` ya poblado desde la carpeta de la
+colección (sin subir nada de nuevo) y `collection_name` para precargar la
+descripción; generar con ese job dejó el Excel en
+`colecciones/<slug>/rendiciones/`, no en un temporal descartable; y, cubriendo
+explícitamente "la colección se conserva tal cual" del pedido original, un test
+confirma que después de generar la colección sigue existiendo con sus boletas y se le
+puede seguir agregando más para una corrida futura. `rename_receipt` (mismo archivo de
+test): cambia la parte descriptiva y preserva extensión/contenido, sanea el nuevo
+nombre con el mismo criterio que el resto de la app, rechaza nombre vacío, boleta
+inexistente (`FileNotFoundError`) y colisión con otra boleta ya presente
+(`FileExistsError`), y que renombrar al mismo nombre no hace nada. Y en
+`tests/test_web.py`: el mismo endpoint vía HTTP para colecciones
+(`PATCH .../collections/{slug}/receipts/{filename}`) y para jobs
+(`PATCH /api/jobs/{id}/receipts/{filename}`) — incluyendo que renombrar invalida el
+parseo anterior de un job (mismo criterio que subir/quitar una boleta) y que una
+colisión de nombres responde 409.
