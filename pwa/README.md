@@ -60,6 +60,24 @@ de almacenamiento permanente — exportá cada colección relativamente pronto d
 de cargar las boletas. La app lo recuerda con un aviso en la pantalla de cada
 colección.
 
+## Nombrar boletas (la descripción del gasto)
+
+Al agregar una boleta queda con un nombre genérico (`boleta_<fecha>_<random>.jpg`).
+Tocando el nombre que se muestra debajo de cada miniatura se puede editar — ese
+texto es la **descripción del gasto** (ej. "Almuerzo con cliente dos personas"),
+porque el nombre de archivo es justo lo que la app de PC usa como columna Comments
+del Excel al generar la rendición (`main.py::build_comments`).
+
+- Se permiten espacios (se colapsan las repeticiones); los caracteres no válidos en
+  un nombre de archivo (`/ \ : * ? " < > |`) se reemplazan por `_`. La extensión
+  (`.jpg`) se agrega sola, no es editable.
+- Si el nombre elegido ya lo usa otra boleta de la misma colección, se agrega un
+  sufijo (`-2`, `-3`, ...) automáticamente y aparece un aviso — no hace falta
+  reintentar a mano.
+- No es obligatorio: si no se edita, queda el nombre genérico, y se puede seguir
+  renombrando después en la app de PC (que también lo permite, en el detalle de
+  cada colección).
+
 ## Cómo probar el round-trip completo (celular → PC)
 
 1. En la PWA: creá una colección, agregá una o más boletas (foto o galería), y

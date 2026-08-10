@@ -93,13 +93,18 @@
 
         <div class="receipt-grid">
           <template x-for="receipt in receipts" :key="receipt.id">
-            <div class="receipt-thumb">
-              <img :src="receiptUrl(receipt)" alt="Boleta" />
-              <button class="remove" @click="deleteReceipt(receipt.id)" aria-label="Eliminar boleta">&times;</button>
+            <div class="receipt-item">
+              <div class="receipt-thumb">
+                <img :src="receiptUrl(receipt)" alt="Boleta" />
+                <button class="remove" @click="deleteReceipt(receipt.id)" aria-label="Eliminar boleta">&times;</button>
+              </div>
+              <button class="receipt-name" @click="renameReceipt(receipt)" x-text="stemOf(receipt.filename)"></button>
             </div>
           </template>
           <template x-for="n in processingCount" :key="'processing-' + n">
-            <div class="receipt-thumb processing">Procesando…</div>
+            <div class="receipt-item">
+              <div class="receipt-thumb processing">Procesando…</div>
+            </div>
           </template>
         </div>
 

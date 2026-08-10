@@ -140,9 +140,8 @@ const ParserBoletasDB = (() => {
       });
     },
 
-    // Nombre de archivo único dentro de una colección — la PWA no pide
-    // describir cada boleta (eso se hace después, renombrando en la app de
-    // PC, que es donde ese nombre importa para la columna Comments del Excel).
+    // Nombre de archivo por defecto al agregar una boleta — se usa tal cual si
+    // el usuario no le pone un nombre propio (ver renameReceipt más abajo).
     generateReceiptFilename() {
       const stamp = new Date()
         .toISOString()
@@ -152,5 +151,69 @@ const ParserBoletasDB = (() => {
       const random = Math.random().toString(36).slice(2, 6);
       return `boleta_${stamp}_${random}.jpg`;
     },
+
+    // Sanea el nombre editable de una boleta — mismo criterio que
+    // main.py::sanitize_receipt_name en la app de PC: reemplaza los
+    // caracteres prohibidos en un nombre de archivo (/ \ : * ? " < > |) por
+    // "_", pero PRESERVA los espacios (solo colapsa repeticiones) — a
+    // diferencia del saneo del nombre de colección. Este texto termina siendo
+    // la columna Comments del Excel de rendición (vía Path.stem del nombre de
+    // archivo), así que "Almuerzo cliente X" tiene que sobrevivir tal cual.
+    sanitizeReceiptName(text) {
+      return (text || "")
+        .replace(/[\\/:*?"<>|]/g, "_")
+        .replace(/\s+/g, " ")
+        .trim();
+    },
+
+    // Nombre de archivo único dentro de la colección: si "<stem>.jpg" ya lo
+    // usa otra boleta, agrega "-2", "-3", ... hasta encontrar uno libre.
+    // `excludeReceiptId` se usa al renombrar, para no chocar contra el propio
+    // registro que se está renombrando.
+    async resolveUniqueFilename(collectionId, stem, extension, excludeReceiptId = null) {
+      const existing = await this.listReceipts(collectionId);
+      const taken = new Set(
+        existing.filter((r) => r.id !== excludeReceiptId).map((r) => r.filename.toLowerCase())
+      );
+      let candidate = `${stem}${extension}`;
+      let suffix = 2;
+      while (taken.has(candidate.toLowerCase())) {
+        candidate = `${stem}-${suffix}${extension}`;
+        suffix += 1;
+      }
+      return candidate;
+    },
+
+    // Renombra una boleta ya guardada: sanea `newName`, resuelve colisiones
+    // con otras boletas de la misma colección, y persiste. La extensión
+    // (".jpg" — la PWA siempre normaliza a JPEG, ver capture.js) no la edita
+    // el usuario, se agrega sola. Lanza si el nombre saneado queda vacío.
+    async renameReceipt(receiptId, collectionId, newName) {
+      const sanitized = this.sanitizeReceiptName(newName);
+      if (!sanitized) throw new Error("El nombre no puede quedar vacío.");
+
+      const filename = await this.resolveUniqueFilename(collectionId, sanitized, ".jpg", receiptId);
+
+      await withStore([STORE_RECEIPTS], "readwrite", (tx) => {
+        const store = tx.objectStore(STORE_RECEIPTS);
+        const getRequest = store.get(receiptId);
+        getRequest.onsuccess = () => {
+          const record = getRequest.result;
+          if (record) {
+            record.filename = filename;
+            store.put(record);
+          }
+        };
+      });
+
+      return filename;
+    },
   };
 })();
+
+// Exponer para Node (test de round-trip del saneo de nombres) sin afectar el
+// uso normal en el navegador, donde `module` no existe. Solo se llaman desde
+// ahí las funciones puras (sanitizeReceiptName) — nada que toque indexedDB.
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { ParserBoletasDB };
+}

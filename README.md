@@ -720,7 +720,11 @@ note. Y `pwa/js/export-zip.js` (`tests/test_pwa_export_contract.py`, se salta si
 hay Node/`pwa/node_modules/jszip`): corre la lógica de exportación de la PWA tal
 cual, con Node (`pwa/scripts/build_test_zip.js`), y el `.zip` resultante se importa
 con el código Python real — mismo criterio de round-trip que el generador de
-Python, para la mitad del contrato que vive en JavaScript.
+Python, para la mitad del contrato que vive en JavaScript. Una de las boletas del
+fixture usa `ParserBoletasDB.sanitizeReceiptName` sobre un nombre con espacios
+repetidos (el nombrado editable de boletas en la PWA — ver `pwa/README.md`), y un
+segundo test corre el pipeline completo hasta generar el Excel para confirmar que
+ese nombre llega intacto a la columna Comments.
 
 ## Fuera de alcance en v1
 

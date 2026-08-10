@@ -230,7 +230,32 @@ input[type="text"]:focus {
 .receipt-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
+  gap: 8px 8px;
+}
+
+.receipt-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.receipt-name {
+  background: none;
+  border: none;
+  padding: 2px 1px;
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  width: 100%;
+  min-height: 22px;
+}
+
+.receipt-name:active {
+  color: var(--hitachi-red);
 }
 
 .receipt-thumb {

@@ -16,6 +16,7 @@ const path = require("path");
 
 global.JSZip = require("jszip");
 const { ParserBoletasExport } = require("../js/export-zip.js");
+const { ParserBoletasDB } = require("../js/db.js");
 
 async function main() {
   const [, , outputPath, collectionName] = process.argv;
@@ -28,10 +29,15 @@ async function main() {
   // Contenido de boleta ficticio — este script prueba el CONTRATO del zip
   // (estructura/metadata), no la legibilidad de la imagen para el modelo de
   // visión (eso ya lo cubre scripts/generar_coleccion_prueba.py del lado PC).
+  // Una de las boletas usa un nombre "descripción del gasto" con espacios
+  // (mismo saneo que aplica renameReceipt en la app real, ParserBoletasDB.
+  // sanitizeReceiptName) para probar que el contrato tolera espacios de punta
+  // a punta, no solo los nombres genéricos "boleta_*".
+  const describedStem = ParserBoletasDB.sanitizeReceiptName("  almuerzo con  cliente   dos personas  ");
   const receipts = [
     { filename: "boleta_clp.jpg", blob: Buffer.from("contenido-fake-clp") },
     { filename: "boleta_usd.jpg", blob: Buffer.from("contenido-fake-usd") },
-    { filename: "boleta_pen.jpg", blob: Buffer.from("contenido-fake-pen") },
+    { filename: `${describedStem}.jpg`, blob: Buffer.from("contenido-fake-pen") },
   ];
 
   const zipBlob = await ParserBoletasExport.buildZip(collection, receipts);

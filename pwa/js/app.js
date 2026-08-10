@@ -133,6 +133,38 @@ function parserBoletasApp() {
       return receipt._url;
     },
 
+    // Nombre mostrado bajo la miniatura: sin extensión, igual criterio que la
+    // columna Comments del Excel en la app de PC (Path.stem del archivo).
+    stemOf(filename) {
+      const idx = filename.lastIndexOf(".");
+      return idx > 0 ? filename.slice(0, idx) : filename;
+    },
+
+    // Tocar el nombre bajo una miniatura para editarlo — es la descripción
+    // del gasto (ej. "Almuerzo con cliente dos personas"), porque ese nombre
+    // de archivo termina siendo la columna Comments del Excel al importar en
+    // la app de PC. Sin nombre propio, queda el que se le puso al agregarla.
+    async renameReceipt(receipt) {
+      const input = window.prompt("Nombre de la boleta (descripción del gasto):", this.stemOf(receipt.filename));
+      if (input === null) return; // canceló
+      const sanitized = ParserBoletasDB.sanitizeReceiptName(input);
+      if (!sanitized) return; // vacío después de sanear: no cambia nada
+
+      this.error = null;
+      try {
+        const finalFilename = await ParserBoletasDB.renameReceipt(receipt.id, this.activeCollection.id, sanitized);
+        receipt.filename = finalFilename;
+        if (finalFilename.toLowerCase() !== `${sanitized.toLowerCase()}.jpg`) {
+          this.toast = `Ya había una boleta con ese nombre — se guardó como "${this.stemOf(finalFilename)}".`;
+          setTimeout(() => {
+            this.toast = null;
+          }, 4000);
+        }
+      } catch (e) {
+        this.error = e.message;
+      }
+    },
+
     releaseReceiptUrls() {
       for (const receipt of this.receipts) {
         if (receipt._url) URL.revokeObjectURL(receipt._url);

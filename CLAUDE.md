@@ -336,11 +336,27 @@ collections.py`, verificado contra el código real, no copiado de memoria).
 - **`pwa/js/db.js`**: todo el estado (colecciones + boletas como `Blob`) vive en
   IndexedDB del dispositivo — sin servidor, sin red. Dos object stores
   (`collections`, `receipts` con índice `by_collection`). `generateReceiptFilename()`
-  arma nombres genéricos (`boleta_<timestamp>_<random>.jpg`) a propósito: la PWA no
-  pide describir cada boleta — eso se resuelve renombrando en el detalle de colección
-  de la app de PC (que ya soporta renombrar, ver arriba), donde ese nombre importa de
-  verdad para la columna Comments del Excel. División de trabajo: capturar rápido en
-  el celular, describir con calma en la PC.
+  arma un nombre genérico (`boleta_<timestamp>_<random>.jpg`) al agregar una boleta,
+  que queda tal cual si el usuario no le pone nombre propio.
+  - **Nombrar/renombrar boletas en la PWA** (`sanitizeReceiptName`/`resolveUniqueFilename`/
+    `renameReceipt`): el nombre de archivo es la descripción del gasto (ej. "Almuerzo
+    con cliente dos personas"), porque termina siendo la columna Comments del Excel al
+    importar — mismo principio que ya regía en la app de PC, ahora también disponible
+    en el celular. `sanitizeReceiptName` es un espejo deliberado de
+    `main.py::sanitize_receipt_name`: reemplaza `/ \ : * ? " < > |` por `_` pero
+    **preserva los espacios** (solo colapsa repeticiones) — a diferencia del saneo de
+    nombre de colección. La extensión (`.jpg`, la PWA siempre normaliza a JPEG) no la
+    edita el usuario, se agrega sola. `resolveUniqueFilename` resuelve colisiones
+    dentro de la misma colección agregando `-2`, `-3`, ... (comparación case-
+    insensitive) — a diferencia de `rename_receipt` en la PC (que rechaza con
+    `FileExistsError` y deja que el usuario reintente), acá se resuelve solo y se avisa
+    con un toast, porque en el flujo de captura rápida no tiene sentido interrumpir.
+    UI: `app.js::renameReceipt()` usa `window.prompt()` nativo (mismo criterio que el
+    `confirm()` de borrar colección — funciona en PWA standalone de iOS) para no salirse
+    del alcance con un modal custom; se dispara tocando el nombre mostrado debajo de
+    cada miniatura (`index.html`, `.receipt-name`), no automáticamente al cargar la
+    foto (se descartó esa opción a propósito: interrumpir con un prompt por cada foto
+    de una carga múltiple desde la galería sería molesto).
 - **`pwa/js/capture.js`**: normaliza cualquier imagen a JPEG reescalado (~2000px de
   lado mayor) dibujándola en un `<canvas>`. Resuelve dos problemas de una: HEIC (las
   fotos de la app Cámara de iPhone suelen guardarse así; Safari sabe decodificar HEIC
@@ -383,6 +399,18 @@ collections.py`, verificado contra el código real, no copiado de memoria).
   la imagen, no la pasó sin tocar). Se verificó por separado que el service worker
   llega a `activated` y que la app entera (crear colección incluido) sigue
   funcionando con la red completamente cortada (`context.setOffline(true)`).
+  `test_pwa_export_contract.py` también cubre el nombrado de boletas: una de las
+  boletas del fixture usa `ParserBoletasDB.sanitizeReceiptName` (requerido con Node
+  igual que `export-zip.js`, sin tocar `indexedDB`) sobre un nombre con espacios
+  repetidos, y un segundo test corre el pipeline completo (`main.process_all` +
+  `excel_writer.write_expense_report`, con `process_file` mockeado) para confirmar
+  que ese nombre llega intacto a la columna Comments del Excel — no solo que el ZIP
+  importa, sino que el texto que el usuario tecleó en el celular es lo que termina
+  viendo en la rendición. Además, durante el desarrollo se corrió un E2E con
+  Playwright que renombra una boleta vía el `prompt()` real (interceptado con
+  `page.on("dialog")`), incluyendo el caso de colisión de nombres (dos boletas con
+  la misma descripción, distinta capitalización) para confirmar que
+  `resolveUniqueFilename` agrega el sufijo `-2` y que el toast de aviso aparece.
 
 ## Empaquetado con PyInstaller (`app.spec`, `build.bat`, `src/paths.py`)
 
