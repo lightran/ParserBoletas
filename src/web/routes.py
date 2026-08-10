@@ -19,7 +19,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -200,6 +200,36 @@ def create_collection(payload: CreateCollectionRequest):
     except receipt_collections.CollectionAlreadyExistsError:
         raise HTTPException(status_code=409, detail="Ya existe una colección con ese nombre.")
     except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _collection_payload(summary)
+
+
+@app.post("/api/collections/import")
+async def import_collection(
+    file: UploadFile = File(...),
+    replace_existing: bool = Form(False),
+):
+    """Importa una colección desde un ZIP (ver el contrato de formato en el
+    docstring de receipt_collections.py) — típicamente exportado por una
+    herramienta externa de captura de boletas. Si ya existe una colección con el
+    mismo nombre y `replace_existing` es falso, devuelve 409 para que el
+    frontend pida confirmación explícita antes de reintentar reemplazándola."""
+    if Path(file.filename or "").suffix.lower() != ".zip":
+        raise HTTPException(status_code=400, detail="El archivo debe ser un .zip.")
+    try:
+        summary = receipt_collections.import_collection_from_zip(
+            file.file, replace_existing=replace_existing
+        )
+    except receipt_collections.CollectionAlreadyExistsError as exc:
+        existing = receipt_collections.get_collection(str(exc))
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Ya existe una colección llamada '{existing.name}'. "
+                "Confirma para reemplazarla por completo."
+            ),
+        )
+    except receipt_collections.InvalidCollectionArchiveError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return _collection_payload(summary)
 

@@ -1,0 +1,9 @@
+{
+  "name": "parserboletas-pwa",
+  "private": true,
+  "version": "1.0.0",
+  "description": "PWA de captura de boletas (celular). No tiene build ni runtime de Node — se sirve como archivos estáticos (ver ../README.md). Esta dependencia de dev es solo para tests/test_pwa_export_contract.py, que corre pwa/js/export-zip.js con Node contra el importador Python real (round-trip del contrato del ZIP).",
+  "devDependencies": {
+    "jszip": "3.10.1"
+  }
+}

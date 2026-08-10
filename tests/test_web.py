@@ -68,6 +68,27 @@ def _upload(client, job_id, filenames):
     return client.post(f"/api/jobs/{job_id}/receipts", files=files)
 
 
+def _build_collection_zip(name="Viaje Lima", receipts=None):
+    """Arma en memoria un .zip con el contrato de import de colecciones (ver
+    receipt_collections.py) — mismo helper que tests/test_receipt_collections.py,
+    duplicado a propósito para que este archivo de tests no dependa del otro."""
+    import json
+    import zipfile
+
+    if receipts is None:
+        receipts = {"a.jpg": b"contenido-a"}
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(
+            "coleccion.json",
+            json.dumps({"version": 1, "name": name, "receipts": list(receipts.keys())}),
+        )
+        for filename, content in receipts.items():
+            zf.writestr(f"boletas/{filename}", content)
+    buf.seek(0)
+    return buf
+
+
 def _mock_results(monkeypatch, results_by_file, config=None):
     cfg = config or main.load_config(routes.CONFIG_PATH)
 
@@ -577,6 +598,127 @@ def test_rename_collection_receipt_unknown_file_returns_404(client):
     slug = client.post("/api/collections", json={"name": "Viaje Lima"}).json()["slug"]
     r = client.patch(f"/api/collections/{slug}/receipts/no-existe.jpg", json={"new_name": "x"})
     assert r.status_code == 404
+
+
+# --- importar colección desde ZIP -------------------------------------------------
+
+
+def test_import_collection_creates_new_collection(client):
+    zip_buf = _build_collection_zip("Viaje Lima Importado", {"a.jpg": b"x", "b.jpg": b"y"})
+    r = client.post(
+        "/api/collections/import",
+        files={"file": ("coleccion.zip", zip_buf, "application/zip")},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["slug"] == "Viaje_Lima_Importado"
+    assert data["n_receipts"] == 2
+
+    detail = client.get(f"/api/collections/{data['slug']}").json()
+    assert sorted(detail["receipts"]) == ["a.jpg", "b.jpg"]
+
+
+def test_import_collection_rejects_non_zip_extension(client):
+    r = client.post(
+        "/api/collections/import",
+        files={"file": ("coleccion.txt", io.BytesIO(b"x"), "text/plain")},
+    )
+    assert r.status_code == 400
+
+
+def test_import_collection_rejects_corrupt_zip(client):
+    r = client.post(
+        "/api/collections/import",
+        files={"file": ("coleccion.zip", io.BytesIO(b"not a real zip"), "application/zip")},
+    )
+    assert r.status_code == 400
+
+
+def test_import_collection_conflict_returns_409_without_touching_existing(client):
+    slug = client.post("/api/collections", json={"name": "Viaje Lima"}).json()["slug"]
+    client.post(
+        f"/api/collections/{slug}/receipts",
+        files=[("files", ("old.jpg", io.BytesIO(b"old"), "image/jpeg"))],
+    )
+
+    zip_buf = _build_collection_zip("Viaje Lima", {"new.jpg": b"new"})
+    r = client.post(
+        "/api/collections/import",
+        files={"file": ("coleccion.zip", zip_buf, "application/zip")},
+    )
+    assert r.status_code == 409
+    assert "Viaje Lima" in r.json()["detail"]
+
+    # La colección existente no se tocó.
+    detail = client.get(f"/api/collections/{slug}").json()
+    assert detail["receipts"] == ["old.jpg"]
+
+
+def test_import_collection_with_replace_existing_flag_overwrites(client):
+    slug = client.post("/api/collections", json={"name": "Viaje Lima"}).json()["slug"]
+    client.post(
+        f"/api/collections/{slug}/receipts",
+        files=[("files", ("old.jpg", io.BytesIO(b"old"), "image/jpeg"))],
+    )
+
+    zip_buf = _build_collection_zip("Viaje Lima", {"new.jpg": b"new"})
+    r = client.post(
+        "/api/collections/import",
+        files={"file": ("coleccion.zip", zip_buf, "application/zip")},
+        data={"replace_existing": "true"},
+    )
+    assert r.status_code == 200
+
+    detail = client.get(f"/api/collections/{slug}").json()
+    assert detail["receipts"] == ["new.jpg"]
+
+
+def test_import_collection_incomplete_zip_returns_400(client):
+    import json
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(
+            "coleccion.json",
+            json.dumps({"version": 1, "name": "Incompleta", "receipts": ["a.jpg", "b.jpg"]}),
+        )
+        zf.writestr("boletas/a.jpg", b"x")  # falta b.jpg
+    buf.seek(0)
+
+    r = client.post(
+        "/api/collections/import",
+        files={"file": ("coleccion.zip", buf, "application/zip")},
+    )
+    assert r.status_code == 400
+    assert "Incompleta" not in [c["name"] for c in client.get("/api/collections").json()]
+
+
+def test_import_collection_then_generate_report_reuses_existing_pipeline(client, monkeypatch):
+    # Cubre explícitamente "la colección importada debe generar rendición
+    # correctamente reutilizando el pipeline existente" — mismo flujo/mocks que
+    # ya usan los tests de colecciones creadas a mano.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "env-token")
+    zip_buf = _build_collection_zip("Viaje Lima Importado", {"pen.jpg": b"x"})
+    slug = client.post(
+        "/api/collections/import",
+        files={"file": ("coleccion.zip", zip_buf, "application/zip")},
+    ).json()["slug"]
+
+    job_id = client.post(f"/api/collections/{slug}/generate-job").json()["job_id"]
+    _mock_results(monkeypatch, {"pen.jpg": _make_ok_result(currency="CLP", amount=33200.0)})
+    _parse_and_wait(client, job_id)
+
+    r = client.post(f"/api/jobs/{job_id}/generate", json={"description": "viaje lima"})
+    assert r.status_code == 200
+    dl = client.get(r.json()["report_url"])
+    assert dl.status_code == 200
+
+    rendiciones_dir = routes.receipt_collections.rendiciones_dir(slug)
+    assert (rendiciones_dir / "Expense_Report_viaje_lima.xlsx").exists()
+
+    detail = client.get(f"/api/collections/{slug}").json()
+    assert detail["last_generated_at"] is not None
 
 
 # --- generar rendición desde una colección (reusa el flujo de Job existente) ----

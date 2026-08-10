@@ -130,6 +130,31 @@
             </section>
 
             <section class="mb-6 rounded-xl border border-gray-200 p-5">
+              <h2 class="mb-1 text-sm font-semibold text-gray-900">Importar colección (ZIP)</h2>
+              <p class="mb-3 text-sm text-gray-500">
+                Importá una colección exportada desde otra herramienta (ej. la app del
+                celular) — un .zip con <code class="text-xs">coleccion.json</code> +
+                <code class="text-xs">boletas/</code>. Si ya existe una colección con
+                ese nombre, se reemplaza por completo (se te va a pedir confirmación).
+              </p>
+              <button
+                @click="$refs.importZipInput.click()"
+                :disabled="importingCollection"
+                class="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:border-hitachi hover:text-hitachi disabled:opacity-40"
+              >
+                <span x-show="!importingCollection">Importar colección (ZIP)</span>
+                <span x-show="importingCollection" x-cloak>Importando…</span>
+              </button>
+              <input
+                x-ref="importZipInput"
+                type="file"
+                accept=".zip"
+                class="hidden"
+                @change="onImportZipChosen($event)"
+              />
+            </section>
+
+            <section class="mb-6 rounded-xl border border-gray-200 p-5">
               <h2 class="mb-3 text-sm font-semibold text-gray-900">Tus colecciones</h2>
               <p class="text-sm text-gray-500" x-show="!loadingCollections && !collections.length" x-cloak>
                 Todavía no creaste ninguna colección.

@@ -281,6 +281,56 @@ Cada colección se guarda en una carpeta persistente (`colecciones/<nombre>/`, j
 servidor, o reiniciar la máquina. Los Excel generados quedan dentro de esa misma
 carpeta (`colecciones/<nombre>/rendiciones/`), no en el `output/` general.
 
+#### Importar una colección desde un ZIP
+
+Si capturás boletas con otra herramienta (ej. una app de celular) que exporta la
+colección como `.zip`, la podés importar directo sin depender de que el celular y el
+PC estén conectados a la misma red — el archivo se transfiere por donde quieras
+(mail, cable, AirDrop) y se importa localmente.
+
+Botón **"Importar colección (ZIP)"**, junto a "Nueva colección". El `.zip` tiene que
+tener esta estructura exacta:
+
+```
+<NombreColeccion>.zip
+├── coleccion.json   # {"version": 1, "name": "...", "receipts": ["a.jpg", ...]}
+└── boletas/
+    ├── a.jpg
+    └── ...
+```
+
+- Si no existe una colección con ese nombre, se crea. Si **ya existe una con el mismo
+  nombre, se reemplaza por completo** — la página te pide confirmación explícita antes
+  de descartar lo que había (el ZIP pasa a ser la fuente de verdad para esa colección).
+- Antes de aceptar el import se valida todo: que el ZIP no esté corrupto, que
+  `coleccion.json` tenga una versión de formato soportada, y que cada boleta declarada
+  esté realmente adentro (para detectar un paquete incompleto). Si algo falla, se
+  rechaza con un mensaje claro y **no se toca ninguna colección existente**.
+- Una vez importada, la colección funciona exactamente igual que una creada a mano:
+  ver/agregar/quitar/renombrar boletas, generar rendición.
+
+**Generar un ZIP de prueba** (sin depender de ninguna herramienta externa):
+
+```bash
+python scripts/generar_coleccion_prueba.py
+```
+
+Genera `scripts/fixtures/Coleccion_Prueba_Multi_Moneda.zip` — 3 boletas ficticias
+(CLP, USD, PEN) alineadas 100% con el contrato de arriba (mismo formato que valida el
+importador real), para probar el import y el flujo multi-moneda de punta a punta sin
+armar nada a mano. `--name`/`--output` para personalizar; ver el docstring del script
+para el contrato completo del ZIP, campo por campo (también sirve como especificación
+de referencia para cualquier otra herramienta que exporte colecciones en este formato).
+
+**App de celular para capturar boletas** (`pwa/`): una PWA instalable (pensada para
+iPhone vía Safari — "Agregar a inicio", sin App Store) que captura boletas con la
+cámara o la galería, las organiza en colecciones locales (IndexedDB, funciona
+offline), y las exporta como `.zip` con exactamente este mismo contrato — el archivo
+resultante se importa en Colecciones tal cual el de arriba. La PWA **no** extrae
+datos ni llama a ninguna API de IA: solo captura/organiza/exporta, toda la
+extracción sigue pasando acá al importar. Ver [`pwa/README.md`](pwa/README.md) para
+instrucciones de deploy (GitHub Pages vía Actions) e instalación en el celular.
+
 ## Empaquetar como ejecutable de Windows
 
 La interfaz web se puede distribuir como un `.exe` portable de Windows, sin que
@@ -545,6 +595,11 @@ ParserBoletas/
       static/         # app.css, app.js
   tests/              # pytest, con casos armados a partir de boletas reales
   colecciones/        # colecciones creadas por el usuario (persistente, en .gitignore)
+  scripts/
+    generar_coleccion_prueba.py  # ZIP de colección de prueba (multi-moneda) para probar el import
+  pwa/                # app de celular (PWA) para capturar boletas y exportar el ZIP — ver pwa/README.md
+  .github/workflows/
+    deploy-pwa.yml    # publica pwa/ en GitHub Pages en cada push que la toque
   config.yaml         # parámetros calibrables (nunca secretos)
   secrets.yaml        # API key en texto plano — generado localmente, en .gitignore
   requirements.txt        # dependencias de runtime
@@ -641,6 +696,31 @@ la descripción precargada con el nombre de la colección, el Excel generado que
 dentro de `colecciones/<nombre>/rendiciones/` (no en un temporal descartable), y la
 colección sigue existiendo con sus boletas después de generar (se le puede seguir
 agregando más).
+
+**Import de colección desde ZIP** (`import_collection_from_zip`, mismo archivo de
+test): importar crea la colección con el mismo formato en disco que una creada a
+mano; reemplazar una colección existente sin confirmar levanta un error sin tocarla,
+y con confirmación (`replace_existing=True`) descarta su contenido anterior por
+completo; un test fuerza que el intercambio atómico falle a mitad de camino y
+confirma que la colección original queda intacta (sin dejar carpetas de respaldo
+sueltas); rechazo de ZIP corrupto, incompleto (falta una boleta declarada),
+con archivos no declarados, con versión de formato no soportada, y con rutas
+inseguras (path traversal) sin escribir nada fuera de lo esperado. Y en
+`tests/test_web.py`: el endpoint `POST /api/collections/import` — crea, rechaza
+extensión/ZIP inválidos, responde 409 sin tocar la colección existente cuando falta
+confirmar, reemplaza con `replace_existing=true`, y un test de integración que
+importa una colección y genera la rendición de punta a punta reutilizando el mismo
+pipeline que las colecciones creadas a mano.
+
+`scripts/generar_coleccion_prueba.py` (`tests/test_generar_coleccion_prueba.py`):
+que el `.zip` que arma tiene la estructura y los campos exactos del contrato, y que
+importa correctamente contra el importador real (no solo contra la estructura
+esperada) — así generador e importador no pueden desalinearse sin que un test lo
+note. Y `pwa/js/export-zip.js` (`tests/test_pwa_export_contract.py`, se salta si no
+hay Node/`pwa/node_modules/jszip`): corre la lógica de exportación de la PWA tal
+cual, con Node (`pwa/scripts/build_test_zip.js`), y el `.zip` resultante se importa
+con el código Python real — mismo criterio de round-trip que el generador de
+Python, para la mitad del contrato que vive en JavaScript.
 
 ## Fuera de alcance en v1
 

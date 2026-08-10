@@ -159,7 +159,7 @@ download) — cero lógica de FX/generación duplicada.
   ```
   colecciones/
     <slug>/
-      coleccion.json   # nombre visible, fecha de creación, última generación
+      coleccion.json   # version, nombre visible, fecha de creación, última generación
       boletas/         # las imágenes/PDF subidos
       rendiciones/     # Excel generados (creada recién al generar la primera vez)
   ```
@@ -167,6 +167,9 @@ download) — cero lógica de FX/generación duplicada.
   carpeta) es la versión saneada con `main.sanitize_filename_component` — mismo
   criterio que ya usa la app para nombrar el Excel de salida, no uno nuevo.
   `create_collection` lanza `CollectionAlreadyExistsError` si el slug ya existe.
+  `coleccion.json` lleva un campo `version` (`CURRENT_METADATA_VERSION` = 1) desde que
+  se agregó el import por ZIP (ver subsección abajo) — mismo esquema para colecciones
+  creadas a mano o importadas, no hay dos formatos en disco.
 - **La lista de boletas NO se guarda en `coleccion.json`**, a propósito — se deriva
   siempre en vivo listando `boletas/` (`list_receipts`/`get_collection`), para que
   nunca pueda quedar desincronizada de lo que realmente hay en disco (ej. si el proceso
@@ -234,6 +237,153 @@ download) — cero lógica de FX/generación duplicada.
   cambio se manda al backend recién al perder el foco o Enter (`@blur`/
   `@keydown.enter`, no en cada tecla, para no disparar un `PATCH` por letra).
 
+#### Import de colección desde ZIP (`import_collection_from_zip`)
+
+Pensado para una herramienta externa (ej. una app de celular que captura boletas y
+exporta la colección como .zip) — el usuario transfiere el archivo por donde quiera
+(mail, cable, AirDrop) y lo importa desde `POST /api/collections/import`, sin depender
+de conectividad entre el celular y el PC. Formato de intercambio, **distinto** del
+`coleccion.json` local (ver arriba) porque acá sí hace falta declarar qué boletas
+debería tener el paquete, para poder detectar un ZIP incompleto:
+
+```
+<NombreColeccion>.zip
+├── coleccion.json   # {"version": 1, "name": "...", "receipts": ["a.jpg", ...], "created_at": "..." (opcional)}
+└── boletas/
+    ├── a.jpg
+    └── ...
+```
+
+- **Validación exhaustiva antes de tocar cualquier colección existente**: el ZIP debe
+  abrir (`zipfile.BadZipFile` → rechazo), `coleccion.json` debe ser JSON válido con
+  `version` en `SUPPORTED_METADATA_VERSIONS` (hoy solo `{1}` — preparado para poder
+  rechazar con un mensaje claro un paquete de una versión futura/antigua no soportada,
+  en vez de romperse a mitad de camino), `name` no vacío, `receipts` una lista de
+  nombres de archivo con extensión soportada; cada boleta de `receipts` debe existir de
+  verdad en `boletas/` dentro del zip (si falta alguna, el paquete se considera
+  incompleto y se rechaza) y no debe haber archivos en `boletas/` que `receipts` no
+  declare (se ignoran `.DS_Store`/`Thumbs.db`, que algunas herramientas dejan sueltos
+  sin que el usuario lo pida). Cualquier fallo levanta `InvalidCollectionArchiveError`
+  (`routes.py` la traduce a 400) sin tocar nada en disco todavía.
+- **Protección contra zip-slip (path traversal)**: `_safe_extract` nunca usa
+  `ZipFile.extractall()` — extrae entrada por entrada, resolviendo la ruta destino de
+  cada una y verificando que siga contenida dentro del directorio de staging antes de
+  escribirla. Rechaza `../`, rutas absolutas y letras de unidad. Probado con zips
+  armados a mano con entradas maliciosas (`tests/test_receipt_collections.py`).
+- **Reemplazo con confirmación**: si ya existe una colección con el mismo slug y no se
+  pasó `replace_existing=True`, se levanta la misma `CollectionAlreadyExistsError` que
+  ya usa `create_collection` — `routes.py` la traduce a 409 con el nombre visible de la
+  colección existente en el mensaje, para que el frontend arme la confirmación
+  (`window.confirm`, no hay ningún modal custom en la app) y reintente con
+  `replace_existing=True` si el usuario acepta.
+- **Reemplazo atómico**: arma la colección completa en `colecciones/_import_staging/
+  <uuid4>/` — **dentro** de `colecciones/`, a propósito, para que el intercambio final
+  sea un `Path.rename()` en el mismo volumen (atómico en NTFS/POSIX; cruzar volúmenes
+  con `shutil.move` no lo sería). `_import_staging` no contamina `list_collections()`
+  porque esa función solo mira `coleccion.json` en el primer nivel de `colecciones/`, y
+  el de cada import vive un nivel más abajo (`iterdir()` no es recursivo). Si hay que
+  reemplazar: mueve la colección vieja a `<slug>.import-backup-<uuid4>`, mueve el
+  staging al lugar final, y si esa segunda operación falla, restaura el backup — la
+  colección existente nunca queda en un estado a medias (test dedicado que fuerza el
+  fallo del segundo `rename` con monkeypatch y confirma el rollback).
+- **La metadata se reescribe al esquema local estándar** antes del swap — el
+  `coleccion.json` final tiene `version`/`name`/`created_at`/`last_generated_at`, sin
+  `receipts` (se sigue derivando siempre del disco, igual que cualquier otra
+  colección). `created_at` se preserva del manifest si vino; si no, se usa la fecha de
+  importación.
+- **Reutiliza el pipeline sin cambios**: una colección importada es indistinguible de
+  una creada a mano para el resto de la app — "Generar rendición" arma el mismo `Job`
+  de siempre apuntado a su `boletas/`/`rendiciones/`.
+- **`scripts/generar_coleccion_prueba.py`**: genera un .zip de colección de prueba
+  (3 boletas ficticias — imágenes de texto simple sobre fondo blanco, dibujadas con
+  Pillow, sin depender de ningún .ttf del sistema — en CLP/USD/PEN, para ejercitar el
+  flujo multi-moneda completo) alineado con el contrato real, reusando las constantes
+  de `receipt_collections.py` (`CURRENT_METADATA_VERSION`, `METADATA_FILENAME`,
+  `BOLETAS_DIRNAME`) en vez de hardcodear el formato por separado — si el contrato
+  cambia, el generador no puede quedar desincronizado en silencio. El docstring del
+  script documenta el contrato completo del ZIP campo por campo: es la especificación
+  de referencia para cualquier otra herramienta externa (la PWA de celular, ver abajo,
+  es la primera) que quiera exportar colecciones en este formato. `tests/
+  test_generar_coleccion_prueba.py` corre el ZIP generado contra el importador real
+  (no solo contra la estructura esperada) para que generador e importador no puedan
+  desalinearse sin que un test lo note. Salida por defecto en `scripts/fixtures/`
+  (gitignoreado, regenerable).
+
+## App de celular para capturar boletas (`pwa/`)
+
+PWA instalable (HTML/CSS/JS estático, sin build de Node) para capturar boletas con
+cámara o galería, organizarlas en colecciones locales, y exportarlas como `.zip` con
+el mismo contrato que valida `receipt_collections.import_collection_from_zip` — ver
+`pwa/README.md` para deploy/instalación/prueba, y el docstring de `pwa/js/
+export-zip.js` para el contrato campo por campo (espejo del de `receipt_
+collections.py`, verificado contra el código real, no copiado de memoria).
+
+- **Rol acotado a propósito**: la PWA solo captura/organiza/exporta. No extrae
+  datos, no llama a ninguna API de IA, no genera rendición ni Excel — cero lógica de
+  negocio duplicada. Esa separación es la razón de que el contrato del ZIP declare
+  `receipts` explícitamente (a diferencia del `coleccion.json` local, que deriva la
+  lista del disco): la PWA necesita poder afirmar "esto es lo que debería haber" para
+  que el importador detecte una transferencia incompleta, sin que ninguna de las dos
+  puntas necesite saber nada de la extracción de la otra.
+- **Sin backend propio, sin build**: `pwa/index.html` + `pwa/css/app.css` (escrito a
+  mano) + `pwa/js/*.js`, servidos como archivos estáticos desde GitHub Pages. Alpine.js
+  3.16.0 y JSZip 3.10.1 están **vendorizados** en `pwa/vendor/` (no CDN) — la app tiene
+  que funcionar offline desde el primer uso después de instalada, y un `<script
+  src="cdn...">` fallaría si ese primer uso es sin conexión, antes de que el service
+  worker pudiera cachear una respuesta externa. Mismo motivo para no usar Tailwind acá
+  (a diferencia de la interfaz web de escritorio, que sí lo usa vía CDN porque ahí
+  siempre hay un proceso Python local con supuesto de conectividad distinto).
+- **`pwa/js/db.js`**: todo el estado (colecciones + boletas como `Blob`) vive en
+  IndexedDB del dispositivo — sin servidor, sin red. Dos object stores
+  (`collections`, `receipts` con índice `by_collection`). `generateReceiptFilename()`
+  arma nombres genéricos (`boleta_<timestamp>_<random>.jpg`) a propósito: la PWA no
+  pide describir cada boleta — eso se resuelve renombrando en el detalle de colección
+  de la app de PC (que ya soporta renombrar, ver arriba), donde ese nombre importa de
+  verdad para la columna Comments del Excel. División de trabajo: capturar rápido en
+  el celular, describir con calma en la PC.
+- **`pwa/js/capture.js`**: normaliza cualquier imagen a JPEG reescalado (~2000px de
+  lado mayor) dibujándola en un `<canvas>`. Resuelve dos problemas de una: HEIC (las
+  fotos de la app Cámara de iPhone suelen guardarse así; Safari sabe decodificar HEIC
+  al cargarlo en un `<img>` — WebKit lo soporta a nivel de sistema — así que
+  redibujarlo en canvas y exportar con `toBlob("image/jpeg")` da un JPEG real sin
+  ninguna librería de conversión) y tamaño de archivo. La orientación EXIF se resuelve
+  sola: los navegadores modernos aplican `image-orientation: from-image` por defecto
+  al renderizar `<img>`, así que lo que se dibuja en el canvas ya viene bien orientado.
+- **`pwa/js/export-zip.js`**: arma el `.zip` con JSZip — mismos campos/tipos que
+  `receipt_collections._load_manifest` exige (`version` entero, `name` no vacío,
+  `receipts` lista de nombres planos con extensión soportada, `created_at` ISO 8601).
+  `zipFilenameFor()` sanea el nombre del archivo con el mismo criterio que
+  `main.sanitize_filename_component` (reimplementado en JS a mano — no hay forma de
+  compartir código Python/JS acá, así que el test de round-trip es lo que garantiza
+  que no se desalinean).
+- **`pwa/service-worker.js`**: cache-first sobre el app shell completo (HTML/CSS/JS/
+  vendor/íconos) — no hay ninguna llamada de red en la lógica de la app, así que
+  cachear el shell alcanza para funcionar 100% offline (capturar y exportar
+  incluidos). `CACHE_VERSION` hay que subirla a mano cuando cambie algún archivo del
+  shell.
+- **Aviso de purga de iOS**: el detalle de cada colección muestra un recordatorio
+  fijo ("el celular es un lugar de paso") porque iOS puede evictar el IndexedDB de una
+  PWA si pasa mucho tiempo sin abrirla o hay presión de espacio — no hay forma de
+  prevenirlo desde la app, solo de avisar.
+- **Deploy**: `.github/workflows/deploy-pwa.yml` sube `pwa/` como Pages artifact en
+  cada push a `main` que la toque (o a mano, `workflow_dispatch`) — requiere elegir
+  "GitHub Actions" como fuente en Settings → Pages del repo, una vez. Sin rama
+  `gh-pages` ni carpeta `docs/`: se evaluaron esas alternativas y se descartaron por
+  requerir más pasos manuales de mantenimiento (ver `pwa/README.md`).
+- **Verificado end-to-end, no solo revisado**: `tests/test_pwa_export_contract.py`
+  corre `pwa/js/export-zip.js` tal cual con Node (`pwa/scripts/build_test_zip.js`,
+  requiere `npm install` en `pwa/` — se salta solo si no está disponible) y confirma
+  que el `.zip` resultante importa correctamente con el código Python real. Además,
+  durante el desarrollo se corrió un flujo E2E completo con Playwright + Chromium
+  headless contra la PWA servida por HTTP real: crear colección → agregar boleta vía
+  `<input type=file>` (ejercitando `capture.js` de punta a punta) → exportar →
+  interceptar la descarga → los bytes del `.zip` resultante abren con
+  `receipt_collections.import_collection_from_zip` real y la imagen adentro es un
+  JPEG válido (`\xff\xd8\xff\xe0`, confirmando que el canvas efectivamente re-codificó
+  la imagen, no la pasó sin tocar). Se verificó por separado que el service worker
+  llega a `activated` y que la app entera (crear colección incluido) sigue
+  funcionando con la red completamente cortada (`context.setOffline(true)`).
+
 ## Empaquetado con PyInstaller (`app.spec`, `build.bat`, `src/paths.py`)
 
 La interfaz web (no la CLI) se puede empaquetar como `.exe` portable de Windows —
@@ -295,7 +445,11 @@ exclusivamente resolución de rutas en la capa de interfaz.
   `.exe` corriendo con un `PATH` reducido a solo directorios de sistema de Windows (sin
   Python/venv en ningún lado alcanzable) como aproximación a una máquina limpia — la
   validación definitiva en una VM Windows real sin Python queda pendiente del lado del
-  usuario.
+  usuario. También verificado el import de colecciones por ZIP (ver subsección arriba)
+  contra el `.exe` real: la colección importada queda en `colecciones/<slug>/` junto al
+  ejecutable (no en `_MEIPASS`), con el mismo esquema de `coleccion.json` que una
+  colección creada a mano, y el reemplazo con `replace_existing=true` descarta el
+  contenido anterior por completo.
 
 ## Compatibilidad con Windows
 
@@ -695,3 +849,28 @@ inexistente (`FileNotFoundError`) y colisión con otra boleta ya presente
 (`PATCH /api/jobs/{id}/receipts/{filename}`) — incluyendo que renombrar invalida el
 parseo anterior de un job (mismo criterio que subir/quitar una boleta) y que una
 colisión de nombres responde 409.
+
+`import_collection_from_zip` (`tests/test_receipt_collections.py`, con un helper
+`_build_zip` que arma el contrato de import en memoria, sin depender de la
+herramienta de celular): caso nuevo (la colección importada queda con el mismo
+esquema de `coleccion.json` que una creada a mano, sin `receipts`; `rendiciones/`
+también se crea), que se preserva `created_at` del manifest cuando viene, que no
+quedan carpetas de staging huérfanas tras un import exitoso ni contaminan
+`list_collections()`; reemplazo — sin `replace_existing` levanta
+`CollectionAlreadyExistsError` y la colección vieja queda intacta, con
+`replace_existing=True` descarta el contenido anterior por completo, y un test que
+fuerza (con monkeypatch sobre `Path.rename`) que el segundo `rename` del swap falle
+y confirma que la colección original se restaura sin dejar carpetas de backup
+sueltas; validación — ZIP corrupto, sin `coleccion.json`, JSON inválido, versión no
+soportada, `name` faltante, sin carpeta `boletas/`, boleta declarada en la metadata
+que falta en el ZIP (paquete incompleto), archivo en `boletas/` no declarado en la
+metadata (con `.DS_Store`/`Thumbs.db` explícitamente tolerados), extensión no
+soportada en la metadata, y nombre que sanea a vacío; y path traversal — una entrada
+`../evil.txt` y una con ruta absoluta, ambas rechazadas sin escribir nada fuera del
+staging. Y en `tests/test_web.py`: `POST /api/collections/import` crea una colección
+nueva, rechaza extensión no-`.zip` y ZIP corrupto con 400, responde 409 sin tocar la
+colección existente cuando falta confirmar, reemplaza por completo con
+`replace_existing=true`, rechaza un ZIP incompleto con 400, y un test de integración
+que importa una colección y corre "Generar rendición" de punta a punta (mismo mock
+de `process_file` que el resto de los tests) para confirmar que reutiliza el
+pipeline existente sin ninguna lógica duplicada.

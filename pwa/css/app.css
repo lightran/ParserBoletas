@@ -1,0 +1,355 @@
+/* Estilo mobile-first, lenguaje visual Hitachi (mismo acento que la app de
+   escritorio: src/web/static/app.css / templates/index.html) — escrito a mano,
+   sin Tailwind, para que la PWA no dependa de ningún CDN y funcione offline
+   desde la primera carga. */
+
+:root {
+  --hitachi-red: #8c1d40;
+  --hitachi-red-dark: #6c1631;
+  --ink: #111827;
+  --muted: #6b7280;
+  --border: #e5e7eb;
+  --bg: #ffffff;
+  --bg-subtle: #f9fafb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+}
+
+/* --- Header ------------------------------------------------------------- */
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: max(14px, env(safe-area-inset-top)) 16px 14px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.topbar-back {
+  background: none;
+  border: none;
+  color: var(--hitachi-red);
+  font-size: 17px;
+  font-weight: 600;
+  padding: 8px 4px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}
+
+.topbar-title {
+  font-size: 17px;
+  font-weight: 700;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.topbar-eyebrow .accent-bar {
+  width: 4px;
+  height: 12px;
+  background: var(--hitachi-red);
+  border-radius: 2px;
+}
+
+/* --- Layout --------------------------------------------------------------- */
+
+main {
+  padding: 16px;
+  padding-bottom: 140px; /* deja lugar a la barra de acciones fija abajo */
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+.section-title {
+  font-size: 20px;
+  font-weight: 700;
+  margin-bottom: 12px;
+}
+
+/* --- Cards / listas --------------------------------------------------------- */
+
+.card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.card h2 {
+  font-size: 15px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.card p.hint {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0 0 12px;
+  line-height: 1.4;
+}
+
+.collection-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.collection-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 14px 4px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.collection-list li:last-child {
+  border-bottom: none;
+}
+
+.collection-list .name {
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.collection-list .meta {
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 2px;
+}
+
+.icon-button {
+  background: none;
+  border: none;
+  color: var(--muted);
+  min-width: 44px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+}
+
+.empty-state {
+  color: var(--muted);
+  font-size: 14px;
+  text-align: center;
+  padding: 24px 8px;
+}
+
+/* --- Formularios / botones --------------------------------------------------- */
+
+input[type="text"] {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 16px; /* >=16px evita el zoom automático de iOS al enfocar */
+  min-height: 44px;
+  margin-bottom: 10px;
+}
+
+input[type="text"]:focus {
+  outline: none;
+  border-color: var(--hitachi-red);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 0 18px;
+  border-radius: 12px;
+  font-size: 15px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--ink);
+  width: 100%;
+}
+
+.btn:disabled {
+  opacity: 0.4;
+}
+
+.btn-primary {
+  background: var(--hitachi-red);
+  border-color: var(--hitachi-red);
+  color: #fff;
+}
+
+.btn-primary:active {
+  background: var(--hitachi-red-dark);
+}
+
+/* --- Grilla de boletas ------------------------------------------------------- */
+
+.receipt-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.receipt-thumb {
+  position: relative;
+  aspect-ratio: 3 / 4;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+}
+
+.receipt-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.receipt-thumb .remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(17, 24, 39, 0.65);
+  color: #fff;
+  border: none;
+  font-size: 15px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.receipt-thumb.processing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+/* --- Barra de acciones fija (alcanzable con el pulgar) ----------------------- */
+
+.action-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 10;
+  display: flex;
+  gap: 10px;
+  padding: 12px 16px max(12px, env(safe-area-inset-bottom));
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+}
+
+.action-bar .btn {
+  flex: 1;
+}
+
+/* --- Avisos / banners ---------------------------------------------------------- */
+
+.banner {
+  border-radius: 12px;
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+
+.banner-error {
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+}
+
+.banner-info {
+  background: var(--bg-subtle);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.banner-info button {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  padding: 0;
+}
+
+.eviction-hint {
+  color: var(--muted);
+  font-size: 12px;
+  margin: -6px 0 16px;
+}
+
+.toast {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  bottom: 96px;
+  z-index: 20;
+  background: var(--ink);
+  color: #fff;
+  padding: 12px 16px;
+  border-radius: 10px;
+  font-size: 14px;
+  text-align: center;
+}
+
+[x-cloak],
+.hidden {
+  display: none !important;
+}

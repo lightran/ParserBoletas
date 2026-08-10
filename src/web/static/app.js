@@ -36,6 +36,7 @@ function expenseApp() {
     loadingCollections: false,
     newCollectionName: "",
     creatingCollection: false,
+    importingCollection: false,
     activeCollection: null, // { slug, name, created_at, last_generated_at, n_receipts, receipts }
     collectionDragOver: false,
     replacingFilename: null,
@@ -159,6 +160,44 @@ function expenseApp() {
         this.error = this._friendlyError(e);
       } finally {
         this.creatingCollection = false;
+      }
+    },
+
+    // --- Colecciones: importar desde ZIP -----------------------------------------
+
+    onImportZipChosen(event) {
+      const file = event.target.files[0];
+      event.target.value = "";
+      if (!file) return;
+      this.error = null;
+      this.importCollectionZip(file);
+    },
+
+    async importCollectionZip(file, replaceExisting = false) {
+      this.importingCollection = true;
+      this.error = null;
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("replace_existing", replaceExisting ? "true" : "false");
+        const res = await fetch("/api/collections/import", { method: "POST", body: formData });
+
+        if (res.status === 409 && !replaceExisting) {
+          const data = await res.json();
+          const confirmed = window.confirm(`${data.detail}\n\n¿Continuar y reemplazarla por completo?`);
+          if (confirmed) {
+            await this.importCollectionZip(file, true);
+          }
+          return;
+        }
+
+        if (!res.ok) throw new Error((await res.json()).detail || "Error importando la colección.");
+        const summary = await res.json();
+        await this.openCollection(summary.slug);
+      } catch (e) {
+        this.error = this._friendlyError(e);
+      } finally {
+        this.importingCollection = false;
       }
     },
 

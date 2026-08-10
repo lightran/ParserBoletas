@@ -14,6 +14,14 @@ colecciones/
 build/
 dist/
 
+# ZIPs de prueba generados por scripts/generar_coleccion_prueba.py — regenerables,
+# no versionados (el script sí se versiona).
+scripts/fixtures/
+
 # Archivo de secretos local con la API key de Anthropic (texto plano, ver src/api_key.py).
 secrets.yaml
 git s
+
+# Dependencia de dev de la PWA (solo para tests/test_pwa_export_contract.py —
+# ver pwa/package.json). package-lock.json sí se versiona.
+pwa/node_modules/
