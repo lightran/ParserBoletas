@@ -99,7 +99,16 @@ function parserBoletasApp() {
       if (files.length) await this.addFiles(files);
     },
 
-    async addFiles(files) {
+    // Fotos tomadas con la cámara (no las elegidas de la galería, que ya
+    // están en el carrete): además de agregarlas a la colección, se intenta
+    // guardar una copia en el dispositivo — ver saveCameraCopy().
+    async onCameraFilesChosen(event) {
+      const files = Array.from(event.target.files || []);
+      event.target.value = "";
+      if (files.length) await this.addFiles(files, { fromCamera: true });
+    },
+
+    async addFiles(files, { fromCamera = false } = {}) {
       this.error = null;
       this.processingCount = files.length;
       for (const file of files) {
@@ -108,11 +117,31 @@ function parserBoletasApp() {
           const filename = ParserBoletasDB.generateReceiptFilename();
           const record = await ParserBoletasDB.addReceipt(this.activeCollection.id, filename, blob);
           this.receipts.push(record);
+          // La boleta ya quedó agregada a la colección en este punto — lo de
+          // abajo es un intento best-effort que nunca debe poder deshacer ni
+          // bloquear eso (ver saveCameraCopy). No se espera ("fire and
+          // forget") para no demorar el resto de la carga con el share sheet.
+          if (fromCamera) this.saveCameraCopy(blob, filename);
         } catch (e) {
           this.error = `No se pudo procesar "${file.name}": ${e.message}`;
         } finally {
           this.processingCount = Math.max(0, this.processingCount - 1);
         }
+      }
+    },
+
+    // Una PWA no puede escribir en silencio en el carrete de iOS como una app
+    // nativa — el mejor sustituto disponible es ofrecer guardarla vía el
+    // share sheet nativo (que en iOS incluye "Guardar en Fotos" para
+    // imágenes), con descarga directa como respaldo. Reusa la misma imagen ya
+    // normalizada a JPEG que se guardó en la colección, sin reprocesarla.
+    // Nunca deja escapar un error: guardar la copia es secundario a que la
+    // boleta haya quedado en la colección, que ya pasó antes de llamar acá.
+    async saveCameraCopy(blob, filename) {
+      try {
+        await this.shareOrDownload(blob, filename, "image/jpeg");
+      } catch (e) {
+        console.error("No se pudo guardar una copia de la boleta en el dispositivo:", e);
       }
     },
 
@@ -184,7 +213,7 @@ function parserBoletasApp() {
       try {
         const zipBlob = await ParserBoletasExport.buildZip(this.activeCollection, this.receipts);
         const filename = ParserBoletasExport.zipFilenameFor(this.activeCollection.name);
-        await this.shareOrDownload(zipBlob, filename);
+        await this.shareOrDownload(zipBlob, filename, "application/zip");
         this.toast = "Colección exportada.";
         setTimeout(() => {
           this.toast = null;
@@ -196,8 +225,8 @@ function parserBoletasApp() {
       }
     },
 
-    async shareOrDownload(blob, filename) {
-      const file = new File([blob], filename, { type: "application/zip" });
+    async shareOrDownload(blob, filename, mimeType) {
+      const file = new File([blob], filename, { type: mimeType });
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         try {
           await navigator.share({ files: [file], title: filename });
